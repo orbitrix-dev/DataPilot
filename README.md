@@ -32,6 +32,8 @@ stitch_datapilot_enterprise_design_system/
   <screen>/code.html           source design for each screen
 ```
 
+See [docs/BUILD_NOTES.md](docs/BUILD_NOTES.md) for what was built, the route map and a test checklist.
+
 ## Design rules
 
 The full spec is in [`datapilot_design_system.md`](stitch_datapilot_enterprise_design_system/datapilot_design_system.md). In short:
