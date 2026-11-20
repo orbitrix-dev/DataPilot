@@ -3,6 +3,7 @@ import { AppShell } from '../components/layout/AppShell'
 import { adminNav, platformNav } from '../components/layout/navigation'
 import { ModulePlaceholder } from '../pages/ModulePlaceholder'
 import { NotFound } from '../pages/NotFound'
+import { designSystemRoutes } from '../features/design-system/routes'
 
 /**
  * Feature modules register their routes here.
@@ -12,6 +13,7 @@ import { NotFound } from '../pages/NotFound'
  */
 const shellRoutes: RouteObject[] = [
   // feature:shell-routes
+  ...designSystemRoutes,
 ]
 
 const publicRoutes: RouteObject[] = [
