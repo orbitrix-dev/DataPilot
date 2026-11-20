@@ -1,0 +1,519 @@
+<!DOCTYPE html><html lang="en"><head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Guided Onboarding — DataPilot</title>
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <script id="tailwind-config">/** @type {import('tailwindcss').Config} */
+globalThis.tailwind = globalThis.tailwind || {};
+globalThis.tailwind.config = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        'success': '#15803D',
+        'on-success': '#FFFFFF',
+        'success-container': '#DCFCE7',
+        'on-success-container': '#14532D',
+        'warning': '#B45309',
+        'on-warning': '#FFFFFF',
+        'warning-container': '#FEF3C7',
+        'on-warning-container': '#78350F',
+        'error': '#B91C1C',
+        'on-error': '#FFFFFF',
+        'error-container': '#FEE2E2',
+        'on-error-container': '#7F1D1D',
+        'info': '#1D4ED8',
+        'on-info': '#FFFFFF',
+        'info-container': '#DBEAFE',
+        'on-info-container': '#1E3A8A',
+        'light-primary': '#1E40AF',
+        'light-on-primary': '#FFFFFF',
+        'light-primary-container': '#EEF2FF',
+        'light-on-primary-container': '#1E3A8A',
+        'light-secondary': '#4338CA',
+        'light-on-secondary': '#FFFFFF',
+        'light-surface': '#FFFFFF',
+        'light-on-surface': '#0F172A',
+        'light-surface-variant': '#F8FAFC',
+        'light-on-surface-variant': '#475569',
+        'light-surface-container-low': '#F8FAFC',
+        'light-surface-container': '#F1F5F9',
+        'light-surface-container-high': '#E2E8F0',
+        'light-outline': '#CBD5E1',
+        'light-outline-variant': '#E2E8F0',
+        'dark-primary': '#818CF8',
+        'dark-on-primary': '#0F172A',
+        'dark-primary-container': '#1E1B4B',
+        'dark-on-primary-container': '#E0E7FF',
+        'dark-secondary': '#A5B4FC',
+        'dark-on-secondary': '#0F172A',
+        'dark-surface': '#0F172A',
+        'dark-on-surface': '#F8FAFC',
+        'dark-surface-variant': '#1E293B',
+        'dark-on-surface-variant': '#94A3B8',
+        'dark-surface-container-low': '#0F172A',
+        'dark-surface-container': '#1E293B',
+        'dark-surface-container-high': '#334155',
+        'dark-outline': '#334155',
+        'dark-outline-variant': '#1E293B',
+      },
+      borderRadius: {
+        'sm': '4px',
+        'DEFAULT': '6px',
+        'md': '8px',
+        'lg': '10px',
+        'xl': '12px',
+        'full': '9999px',
+      },
+      spacing: {
+        'gutter-xs': '4px',
+        'gutter-sm': '8px',
+        'gutter-md': '16px',
+        'gutter-lg': '24px',
+        'gutter-xl': '32px',
+        'section': '24px',
+        'page-margin': '24px',
+      },
+      fontFamily: {
+        'display': ['"Inter"', 'sans-serif'],
+        'headline': ['"Inter"', 'sans-serif'],
+        'title': ['"Inter"', 'sans-serif'],
+        'body': ['"Inter"', 'sans-serif'],
+        'label': ['"Inter"', 'sans-serif'],
+        'mono': ['"JetBrains Mono"', 'monospace'],
+      },
+      fontSize: {
+        'display-lg': ['36px', { lineHeight: '44px', letterSpacing: '-0.75px', fontWeight: '600' }],
+        'display-lg-mobile': ['28px', { lineHeight: '34px', letterSpacing: '-0.5px', fontWeight: '600' }],
+        'headline-lg': ['24px', { lineHeight: '32px', letterSpacing: '-0.4px', fontWeight: '600' }],
+        'headline-md': ['20px', { lineHeight: '28px', letterSpacing: '-0.25px', fontWeight: '600' }],
+        'title-lg': ['16px', { lineHeight: '24px', letterSpacing: '-0.1px', fontWeight: '600' }],
+        'title-md': ['14px', { lineHeight: '20px', letterSpacing: '0px', fontWeight: '600' }],
+        'body-lg': ['15px', { lineHeight: '22px', letterSpacing: '0px', fontWeight: '400' }],
+        'body-md': ['14px', { lineHeight: '20px', letterSpacing: '0px', fontWeight: '400' }],
+        'body-sm': ['12px', { lineHeight: '16px', letterSpacing: '0px', fontWeight: '400' }],
+        'label-lg': ['14px', { lineHeight: '20px', letterSpacing: '0px', fontWeight: '500' }],
+        'label-md': ['12px', { lineHeight: '16px', letterSpacing: '0.1px', fontWeight: '500' }],
+        'label-sm': ['11px', { lineHeight: '14px', letterSpacing: '0.3px', fontWeight: '600' }],
+        'mono-sm': ['12px', { lineHeight: '18px', letterSpacing: '0px', fontWeight: '400' }],
+      },
+      transitionDuration: {
+        'state-change': '150ms',
+        'surface-enter': '220ms',
+        'surface-exit': '140ms',
+      },
+      transitionDelay: {
+        'state-change': '0ms',
+        'surface-enter': '0ms',
+        'surface-exit': '0ms',
+      },
+      transitionTimingFunction: {
+        'state-change': 'ease-out',
+        'surface-enter': 'cubic-bezier(0.16, 1, 0.3, 1)',
+        'surface-exit': 'cubic-bezier(0.3, 0, 1, 1)',
+      },
+    },
+  },
+};
+if (typeof module !== 'undefined') module.exports = globalThis.tailwind.config;
+</script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=block" rel="stylesheet">
+  <style>.material-symbols-outlined { display: inline-block; width: 1em; height: 1em; line-height: 1 !important; box-sizing: content-box; overflow: hidden; white-space: nowrap; direction: ltr; vertical-align: middle; }</style>
+</head>
+<body class="bg-light-surface-variant text-light-on-surface font-body antialiased">
+
+  <div class="min-h-[1024px] flex flex-col" data-stitch-vh="min-h-[1024px]===min-h-screen">
+    <!-- Onboarding Topbar -->
+    <header class="h-14 bg-light-surface border-b border-light-outline-variant px-4 lg:px-8 flex items-center justify-between">
+      <div class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded bg-light-primary text-light-on-primary flex items-center justify-center">
+          <span class="material-symbols-outlined text-[18px]" aria-hidden="true">analytics</span>
+        </div>
+        <span data-design-text-token="title-lg" class="font-title text-title-lg text-light-on-surface">DataPilot</span>
+        <span class="hidden sm:inline-block px-2 py-0.5 rounded-sm bg-light-surface-container text-light-on-surface-variant font-label text-label-sm">Setup Wizard</span>
+      </div>
+
+      <div class="flex items-center gap-4">
+        <span class="inline-flex items-center gap-1.5 font-body text-body-sm text-light-on-surface-variant">
+          <span class="material-symbols-outlined text-[16px] text-success" aria-hidden="true">cloud_done</span>
+          <span id="save-status">Progress saved</span>
+        </span>
+        <a href="../application-shell/ApplicationShell.html" class="font-label text-label-md text-light-on-surface-variant hover:text-light-on-surface">Skip to Command Center</a>
+      </div>
+    </header>
+
+    <!-- Progress Indicator Bar -->
+    <div class="bg-light-surface border-b border-light-outline-variant px-4 lg:px-8 py-4">
+      <div class="max-w-3xl mx-auto flex flex-col gap-3">
+        <div class="flex items-center justify-between">
+          <span id="step-counter" data-design-text-token="label-md" class="font-label text-label-md text-light-primary tabular-nums">Step 1 of 8</span>
+          <span id="step-name-label" data-design-text-token="body-sm" class="font-body text-body-sm text-light-on-surface-variant">Welcome to DataPilot</span>
+        </div>
+        <!-- 8 Clickable Step Segments -->
+        <div class="grid grid-cols-8 gap-1.5" role="tablist" aria-label="Onboarding steps">
+          <button type="button" onclick="goToStep(1)" class="step-pill h-2 rounded-full bg-light-primary transition-colors" aria-label="Step 1: Welcome"></button>
+          <button type="button" onclick="goToStep(2)" class="step-pill h-2 rounded-full bg-light-surface-container-high transition-colors" aria-label="Step 2: Organization details"></button>
+          <button type="button" onclick="goToStep(3)" class="step-pill h-2 rounded-full bg-light-surface-container-high transition-colors" aria-label="Step 3: Industry selection"></button>
+          <button type="button" onclick="goToStep(4)" class="step-pill h-2 rounded-full bg-light-surface-container-high transition-colors" aria-label="Step 4: Business size"></button>
+          <button type="button" onclick="goToStep(5)" class="step-pill h-2 rounded-full bg-light-surface-container-high transition-colors" aria-label="Step 5: Business objectives"></button>
+          <button type="button" onclick="goToStep(6)" class="step-pill h-2 rounded-full bg-light-surface-container-high transition-colors" aria-label="Step 6: Connect first data source"></button>
+          <button type="button" onclick="goToStep(7)" class="step-pill h-2 rounded-full bg-light-surface-container-high transition-colors" aria-label="Step 7: Initial data scan"></button>
+          <button type="button" onclick="goToStep(8)" class="step-pill h-2 rounded-full bg-light-surface-container-high transition-colors" aria-label="Step 8: Completion"></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Centered Wizard Card -->
+    <main class="flex-1 flex items-center justify-center p-4 md:p-8">
+      <div class="w-full max-w-2xl bg-light-surface border border-light-outline-variant rounded-md overflow-hidden">
+
+        <!-- STEP 1: Welcome to DataPilot -->
+        <section id="step-1" class="step-panel p-6 md:p-8 flex flex-col gap-gutter-lg">
+          <div>
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm bg-light-primary-container text-light-on-primary-container font-label text-label-sm mb-3">Takes about 3 minutes</span>
+            <h1 data-design-text-token="headline-lg" class="font-headline text-headline-lg text-light-on-surface">Welcome to DataPilot</h1>
+            <p data-design-text-token="body-lg" class="font-body text-body-lg text-light-on-surface-variant mt-2 text-pretty">
+              Bring your sales, inventory, and finance data into one trusted view—without spreadsheets or engineering work.
+            </p>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-gutter-md">
+            <div class="p-4 rounded bg-light-surface-container-low border border-light-outline-variant flex flex-col gap-1.5">
+              <span class="material-symbols-outlined text-[20px] text-light-primary" aria-hidden="true">hub</span>
+              <h2 data-design-text-token="title-md" class="font-title text-title-md text-light-on-surface">1. Connect tools</h2>
+              <p data-design-text-token="body-sm" class="font-body text-body-sm text-light-on-surface-variant">Link your accounting or store software safely in read-only mode.</p>
+            </div>
+            <div class="p-4 rounded bg-light-surface-container-low border border-light-outline-variant flex flex-col gap-1.5">
+              <span class="material-symbols-outlined text-[20px] text-light-primary" aria-hidden="true">verified_user</span>
+              <h2 data-design-text-token="title-md" class="font-title text-title-md text-light-on-surface">2. Check accuracy</h2>
+              <p data-design-text-token="body-sm" class="font-body text-body-sm text-light-on-surface-variant">DataPilot spots missing fields or duplicates automatically.</p>
+            </div>
+            <div class="p-4 rounded bg-light-surface-container-low border border-light-outline-variant flex flex-col gap-1.5">
+              <span class="material-symbols-outlined text-[20px] text-light-primary" aria-hidden="true">insights</span>
+              <h2 data-design-text-token="title-md" class="font-title text-title-md text-light-on-surface">3. Track daily KPIs</h2>
+              <p data-design-text-token="body-sm" class="font-body text-body-sm text-light-on-surface-variant">See clear answers in your Command Center every morning.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- STEP 2: Organization name & company details -->
+        <section id="step-2" class="step-panel hidden p-6 md:p-8 flex flex-col gap-gutter-lg">
+          <div>
+            <h1 data-design-text-token="headline-lg" class="font-headline text-headline-lg text-light-on-surface">Tell us about your company</h1>
+            <p data-design-text-token="body-md" class="font-body text-body-md text-light-on-surface-variant mt-1">
+              This helps us format currencies, fiscal calendars, and workspace defaults.
+            </p>
+          </div>
+          <div class="flex flex-col gap-gutter-md">
+            <label class="flex flex-col gap-1.5">
+              <span data-design-text-token="label-md" class="font-label text-label-md text-light-on-surface">Company name</span>
+              <input id="wiz-org" type="text" value="Acme Global Corp" class="w-full px-3 py-2 rounded border border-light-outline bg-light-surface text-body-md text-light-on-surface focus:border-light-primary focus:ring-1 focus:ring-light-primary">
+              <span id="wiz-org-err" role="alert" class="hidden font-body text-body-sm text-error">Please enter your company name to continue.</span>
+            </label>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-gutter-md">
+              <label class="flex flex-col gap-1.5">
+                <span data-design-text-token="label-md" class="font-label text-label-md text-light-on-surface">Your role</span>
+                <select class="w-full px-3 py-2 rounded border border-light-outline bg-light-surface text-body-md text-light-on-surface focus:border-light-primary focus:ring-1 focus:ring-light-primary">
+                  <option>Founder / Business Owner</option>
+                  <option>Operations Manager</option>
+                  <option>Finance / Controller</option>
+                  <option>IT / Systems Lead</option>
+                </select>
+              </label>
+              <label class="flex flex-col gap-1.5">
+                <span data-design-text-token="label-md" class="font-label text-label-md text-light-on-surface">Reporting currency</span>
+                <select class="w-full px-3 py-2 rounded border border-light-outline bg-light-surface text-body-md text-light-on-surface focus:border-light-primary focus:ring-1 focus:ring-light-primary">
+                  <option>USD ($)</option>
+                  <option>EUR (€)</option>
+                  <option>GBP (£)</option>
+                  <option>CAD ($)</option>
+                </select>
+              </label>
+            </div>
+          </div>
+        </section>
+
+        <!-- STEP 3: Industry selection -->
+        <section id="step-3" class="step-panel hidden p-6 md:p-8 flex flex-col gap-gutter-lg">
+          <div>
+            <h1 data-design-text-token="headline-lg" class="font-headline text-headline-lg text-light-on-surface">What industry are you in?</h1>
+            <p data-design-text-token="body-md" class="font-body text-body-md text-light-on-surface-variant mt-1">
+              We tailor your starting metrics and reliability checks to match how your business operates.
+            </p>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3" id="industry-grid">
+            <label class="cursor-pointer border border-light-primary bg-light-primary-container/40 rounded-md p-4 flex items-center gap-3">
+              <input type="radio" name="industry" value="Distribution" checked class="text-light-primary focus:ring-light-primary">
+              <span class="material-symbols-outlined text-[20px] text-light-primary" aria-hidden="true">local_shipping</span>
+              <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface">Distribution</span>
+            </label>
+            <label class="cursor-pointer border border-light-outline-variant hover:border-light-outline rounded-md p-4 flex items-center gap-3">
+              <input type="radio" name="industry" value="Wholesale" class="text-light-primary focus:ring-light-primary">
+              <span class="material-symbols-outlined text-[20px] text-light-on-surface-variant" aria-hidden="true">inventory_2</span>
+              <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface">Wholesale</span>
+            </label>
+            <label class="cursor-pointer border border-light-outline-variant hover:border-light-outline rounded-md p-4 flex items-center gap-3">
+              <input type="radio" name="industry" value="Manufacturing" class="text-light-primary focus:ring-light-primary">
+              <span class="material-symbols-outlined text-[20px] text-light-on-surface-variant" aria-hidden="true">precision_manufacturing</span>
+              <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface">Manufacturing</span>
+            </label>
+            <label class="cursor-pointer border border-light-outline-variant hover:border-light-outline rounded-md p-4 flex items-center gap-3">
+              <input type="radio" name="industry" value="Retail" class="text-light-primary focus:ring-light-primary">
+              <span class="material-symbols-outlined text-[20px] text-light-on-surface-variant" aria-hidden="true">storefront</span>
+              <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface">Retail</span>
+            </label>
+            <label class="cursor-pointer border border-light-outline-variant hover:border-light-outline rounded-md p-4 flex items-center gap-3">
+              <input type="radio" name="industry" value="Logistics" class="text-light-primary focus:ring-light-primary">
+              <span class="material-symbols-outlined text-[20px] text-light-on-surface-variant" aria-hidden="true">route</span>
+              <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface">Logistics</span>
+            </label>
+            <label class="cursor-pointer border border-light-outline-variant hover:border-light-outline rounded-md p-4 flex items-center gap-3">
+              <input type="radio" name="industry" value="Other" class="text-light-primary focus:ring-light-primary">
+              <span class="material-symbols-outlined text-[20px] text-light-on-surface-variant" aria-hidden="true">category</span>
+              <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface">Other</span>
+            </label>
+          </div>
+        </section>
+
+        <!-- STEP 4: Business size and employee count -->
+        <section id="step-4" class="step-panel hidden p-6 md:p-8 flex flex-col gap-gutter-lg">
+          <div>
+            <h1 data-design-text-token="headline-lg" class="font-headline text-headline-lg text-light-on-surface">How large is your team?</h1>
+            <p data-design-text-token="body-md" class="font-body text-body-md text-light-on-surface-variant mt-1">
+              Helps us recommend the right workspace permissions and sync schedule.
+            </p>
+          </div>
+          <div class="flex flex-col gap-2.5">
+            <label class="cursor-pointer border border-light-outline-variant hover:border-light-outline rounded-md p-3.5 flex items-center justify-between">
+              <span class="flex items-center gap-3">
+                <input type="radio" name="size" value="1-10" class="text-light-primary focus:ring-light-primary">
+                <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface tabular-nums">1 – 10 employees</span>
+              </span>
+              <span data-design-text-token="body-sm" class="font-body text-body-sm text-light-on-surface-variant">Small business</span>
+            </label>
+            <label class="cursor-pointer border border-light-primary bg-light-primary-container/40 rounded-md p-3.5 flex items-center justify-between">
+              <span class="flex items-center gap-3">
+                <input type="radio" name="size" value="11-50" checked class="text-light-primary focus:ring-light-primary">
+                <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface tabular-nums">11 – 50 employees</span>
+              </span>
+              <span data-design-text-token="body-sm" class="font-body text-body-sm text-light-on-surface-variant">Growing team</span>
+            </label>
+            <label class="cursor-pointer border border-light-outline-variant hover:border-light-outline rounded-md p-3.5 flex items-center justify-between">
+              <span class="flex items-center gap-3">
+                <input type="radio" name="size" value="51-200" class="text-light-primary focus:ring-light-primary">
+                <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface tabular-nums">51 – 200 employees</span>
+              </span>
+              <span data-design-text-token="body-sm" class="font-body text-body-sm text-light-on-surface-variant">Mid-market</span>
+            </label>
+            <label class="cursor-pointer border border-light-outline-variant hover:border-light-outline rounded-md p-3.5 flex items-center justify-between">
+              <span class="flex items-center gap-3">
+                <input type="radio" name="size" value="201+" class="text-light-primary focus:ring-light-primary">
+                <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface tabular-nums">201+ employees</span>
+              </span>
+              <span data-design-text-token="body-sm" class="font-body text-body-sm text-light-on-surface-variant">Enterprise</span>
+            </label>
+          </div>
+        </section>
+
+        <!-- STEP 5: Business objectives -->
+        <section id="step-5" class="step-panel hidden p-6 md:p-8 flex flex-col gap-gutter-lg">
+          <div>
+            <h1 data-design-text-token="headline-lg" class="font-headline text-headline-lg text-light-on-surface">What are your top goals?</h1>
+            <p data-design-text-token="body-md" class="font-body text-body-md text-light-on-surface-variant mt-1">
+              Select one or more priorities. We will highlight these first in your Command Center.
+            </p>
+          </div>
+          <div class="flex flex-col gap-2.5">
+            <label class="cursor-pointer border border-light-primary bg-light-primary-container/40 rounded-md p-3.5 flex items-center gap-3">
+              <input type="checkbox" checked class="rounded-sm border-light-outline text-light-primary focus:ring-light-primary">
+              <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface">Understand sales performance</span>
+            </label>
+            <label class="cursor-pointer border border-light-primary bg-light-primary-container/40 rounded-md p-3.5 flex items-center gap-3">
+              <input type="checkbox" checked class="rounded-sm border-light-outline text-light-primary focus:ring-light-primary">
+              <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface">Monitor inventory</span>
+            </label>
+            <label class="cursor-pointer border border-light-outline-variant hover:border-light-outline rounded-md p-3.5 flex items-center gap-3">
+              <input type="checkbox" class="rounded-sm border-light-outline text-light-primary focus:ring-light-primary">
+              <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface">Manage receivables</span>
+            </label>
+            <label class="cursor-pointer border border-light-outline-variant hover:border-light-outline rounded-md p-3.5 flex items-center gap-3">
+              <input type="checkbox" class="rounded-sm border-light-outline text-light-primary focus:ring-light-primary">
+              <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface">Improve purchasing</span>
+            </label>
+            <label class="cursor-pointer border border-light-outline-variant hover:border-light-outline rounded-md p-3.5 flex items-center gap-3">
+              <input type="checkbox" class="rounded-sm border-light-outline text-light-primary focus:ring-light-primary">
+              <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface">Improve operational efficiency</span>
+            </label>
+          </div>
+        </section>
+
+        <!-- STEP 6: Connect the first data source -->
+        <section id="step-6" class="step-panel hidden p-6 md:p-8 flex flex-col gap-gutter-lg">
+          <div>
+            <h1 data-design-text-token="headline-lg" class="font-headline text-headline-lg text-light-on-surface">Connect your first data source</h1>
+            <p data-design-text-token="body-md" class="font-body text-body-md text-light-on-surface-variant mt-1 text-pretty">
+              Pick the main system where your sales or accounting records live. DataPilot uses read-only access and never changes your original records.
+            </p>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label class="cursor-pointer border border-light-primary bg-light-primary-container/40 rounded-md p-4 flex items-center justify-between">
+              <span class="flex items-center gap-3">
+                <input type="radio" name="source" value="QuickBooks Online" checked class="text-light-primary focus:ring-light-primary">
+                <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface">QuickBooks Online</span>
+              </span>
+              <span class="px-2 py-0.5 rounded-sm bg-success-container text-on-success-container font-label text-label-sm">Popular</span>
+            </label>
+            <label class="cursor-pointer border border-light-outline-variant hover:border-light-outline rounded-md p-4 flex items-center gap-3">
+              <input type="radio" name="source" value="Shopify" class="text-light-primary focus:ring-light-primary">
+              <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface">Shopify</span>
+            </label>
+            <label class="cursor-pointer border border-light-outline-variant hover:border-light-outline rounded-md p-4 flex items-center gap-3">
+              <input type="radio" name="source" value="NetSuite" class="text-light-primary focus:ring-light-primary">
+              <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface">Oracle NetSuite</span>
+            </label>
+            <label class="cursor-pointer border border-light-outline-variant hover:border-light-outline rounded-md p-4 flex items-center gap-3">
+              <input type="radio" name="source" value="Spreadsheet" class="text-light-primary focus:ring-light-primary">
+              <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface">Upload Excel / CSV</span>
+            </label>
+          </div>
+        </section>
+
+        <!-- STEP 7: Initial data scan progress -->
+        <section id="step-7" class="step-panel hidden p-6 md:p-8 flex flex-col gap-gutter-lg">
+          <div>
+            <h1 data-design-text-token="headline-lg" class="font-headline text-headline-lg text-light-on-surface">Scanning your initial data</h1>
+            <p data-design-text-token="body-md" class="font-body text-body-md text-light-on-surface-variant mt-1">
+              We are checking your QuickBooks Online records for completeness and reliability.
+            </p>
+          </div>
+          <div class="flex flex-col gap-3">
+            <div class="p-4 rounded bg-light-surface-container-low border border-light-outline-variant flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <span class="material-symbols-outlined text-[20px] text-success" aria-hidden="true">check_circle</span>
+                <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface">Secure connection established</span>
+              </div>
+              <span class="px-2 py-0.5 rounded-sm bg-success-container text-on-success-container font-label text-label-sm">Verified</span>
+            </div>
+            <div class="p-4 rounded bg-light-surface border border-light-primary flex flex-col gap-2">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                  <span class="material-symbols-outlined text-[20px] text-light-primary" aria-hidden="true">sync</span>
+                  <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface">Reading invoices, customers, and inventory</span>
+                </div>
+                <span data-design-text-token="label-md" class="font-label text-label-md text-light-primary tabular-nums">78%</span>
+              </div>
+              <div class="h-1.5 w-full rounded-full bg-light-surface-container overflow-hidden">
+                <div class="h-full w-[78%] bg-light-primary rounded-full"></div>
+              </div>
+            </div>
+            <div class="p-4 rounded bg-light-surface-container-low border border-light-outline-variant flex items-center justify-between opacity-75">
+              <div class="flex items-center gap-3">
+                <span class="material-symbols-outlined text-[20px] text-light-on-surface-variant" aria-hidden="true">schedule</span>
+                <span data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface-variant">Building starting Command Center metrics</span>
+              </div>
+              <span data-design-text-token="label-sm" class="font-label text-label-sm text-light-on-surface-variant">Up next</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- STEP 8: Onboarding completion -->
+        <section id="step-8" class="step-panel hidden p-6 md:p-8 flex flex-col gap-gutter-lg">
+          <div class="flex flex-col items-center text-center gap-2">
+            <div class="w-12 h-12 rounded-full bg-success-container text-on-success-container flex items-center justify-center">
+              <span class="material-symbols-outlined text-[24px]" aria-hidden="true">check_circle</span>
+            </div>
+            <h1 data-design-text-token="headline-lg" class="font-headline text-headline-lg text-light-on-surface">Your workspace is ready</h1>
+            <p data-design-text-token="body-md" class="font-body text-body-md text-light-on-surface-variant max-w-md text-pretty">
+              Acme Global Corp is connected and verified. Your initial sales and inventory metrics are waiting in the Command Center.
+            </p>
+          </div>
+          <div class="p-4 rounded bg-light-surface-container-low border border-light-outline-variant grid grid-cols-2 gap-4">
+            <div>
+              <span data-design-text-token="label-sm" class="font-label text-label-sm uppercase text-light-on-surface-variant">Industry</span>
+              <p data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface mt-0.5">Distribution</p>
+            </div>
+            <div>
+              <span data-design-text-token="label-sm" class="font-label text-label-sm uppercase text-light-on-surface-variant">Connected source</span>
+              <p data-design-text-token="label-lg" class="font-label text-label-lg text-light-on-surface mt-0.5">QuickBooks Online</p>
+            </div>
+          </div>
+          <a href="../application-shell/ApplicationShell.html" data-component-id="button-primary" data-component-type="button" data-component-variant="primary" class="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded bg-light-primary text-light-on-primary hover:bg-light-secondary transition-colors duration-state-change">
+            <span data-design-text-token="label-lg" class="font-label text-label-lg">Open Command Center</span>
+            <span class="material-symbols-outlined text-[18px]" aria-hidden="true">arrow_forward</span>
+          </a>
+        </section>
+
+        <!-- Wizard Footer (Back / Continue) -->
+        <footer id="wizard-footer" class="px-6 md:px-8 py-4 bg-light-surface-container-low border-t border-light-outline-variant flex items-center justify-between">
+          <button id="back-btn" type="button" onclick="prevStep()" disabled class="inline-flex items-center gap-1.5 px-4 py-2 rounded border border-light-outline-variant bg-light-surface-container text-light-on-surface-variant cursor-not-allowed font-label text-label-lg">
+            <span class="material-symbols-outlined text-[18px]" aria-hidden="true">arrow_back</span>
+            <span>Back</span>
+          </button>
+          <button id="next-btn" type="button" onclick="nextStep()" class="inline-flex items-center gap-1.5 px-5 py-2 rounded bg-light-primary text-light-on-primary hover:bg-light-secondary font-label text-label-lg transition-colors duration-state-change">
+            <span id="next-btn-label">Continue</span>
+            <span class="material-symbols-outlined text-[18px]" aria-hidden="true">arrow_forward</span>
+          </button>
+        </footer>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    let currentStep = 1;
+    const stepNames = [
+      'Welcome to DataPilot',
+      'Organization details',
+      'Industry selection',
+      'Business size',
+      'Business objectives',
+      'Connect first data source',
+      'Initial data scan',
+      'Setup complete'
+    ];
+
+    function goToStep(n) {
+      if (currentStep === 2 && n > 2) {
+        const org = document.getElementById('wiz-org');
+        const err = document.getElementById('wiz-org-err');
+        if (!org.value.trim()) {
+          err.classList.remove('hidden');
+          org.classList.add('border-error');
+          return;
+        }
+        err.classList.add('hidden');
+        org.classList.remove('border-error');
+      }
+      currentStep = n;
+      document.querySelectorAll('.step-panel').forEach((el, idx) => {
+        el.classList.toggle('hidden', idx + 1 !== currentStep);
+      });
+      document.querySelectorAll('.step-pill').forEach((pill, idx) => {
+        pill.className = idx + 1 <= currentStep
+          ? 'step-pill h-2 rounded-full bg-light-primary transition-colors'
+          : 'step-pill h-2 rounded-full bg-light-surface-container-high transition-colors';
+      });
+      document.getElementById('step-counter').textContent = 'Step ' + currentStep + ' of 8';
+      document.getElementById('step-name-label').textContent = stepNames[currentStep - 1];
+
+      const backBtn = document.getElementById('back-btn');
+      const isFirst = currentStep === 1;
+      backBtn.disabled = isFirst;
+      backBtn.className = isFirst
+        ? 'inline-flex items-center gap-1.5 px-4 py-2 rounded border border-light-outline-variant bg-light-surface-container text-light-on-surface-variant cursor-not-allowed font-label text-label-lg'
+        : 'inline-flex items-center gap-1.5 px-4 py-2 rounded border border-light-outline bg-light-surface text-light-on-surface hover:bg-light-surface-container font-label text-label-lg';
+
+      const footer = document.getElementById('wizard-footer');
+      footer.classList.toggle('hidden', currentStep === 8);
+      document.getElementById('next-btn-label').textContent = currentStep === 7 ? 'Finish setup' : 'Continue';
+    }
+
+    function nextStep() {
+      if (currentStep < 8) goToStep(currentStep + 1);
+    }
+    function prevStep() {
+      if (currentStep > 1) goToStep(currentStep - 1);
+    }
+  </script>
+
+
+</body></html>

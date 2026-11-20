@@ -1,0 +1,188 @@
+<!DOCTYPE html><html lang="en"><head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Forgot password — DataPilot</title>
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <script id="tailwind-config">/** @type {import('tailwindcss').Config} */
+globalThis.tailwind = globalThis.tailwind || {};
+globalThis.tailwind.config = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        'success': '#15803D',
+        'on-success': '#FFFFFF',
+        'success-container': '#DCFCE7',
+        'on-success-container': '#14532D',
+        'warning': '#B45309',
+        'on-warning': '#FFFFFF',
+        'warning-container': '#FEF3C7',
+        'on-warning-container': '#78350F',
+        'error': '#B91C1C',
+        'on-error': '#FFFFFF',
+        'error-container': '#FEE2E2',
+        'on-error-container': '#7F1D1D',
+        'info': '#1D4ED8',
+        'on-info': '#FFFFFF',
+        'info-container': '#DBEAFE',
+        'on-info-container': '#1E3A8A',
+        'light-primary': '#1E40AF',
+        'light-on-primary': '#FFFFFF',
+        'light-primary-container': '#EEF2FF',
+        'light-on-primary-container': '#1E3A8A',
+        'light-secondary': '#4338CA',
+        'light-on-secondary': '#FFFFFF',
+        'light-surface': '#FFFFFF',
+        'light-on-surface': '#0F172A',
+        'light-surface-variant': '#F8FAFC',
+        'light-on-surface-variant': '#475569',
+        'light-surface-container-low': '#F8FAFC',
+        'light-surface-container': '#F1F5F9',
+        'light-surface-container-high': '#E2E8F0',
+        'light-outline': '#CBD5E1',
+        'light-outline-variant': '#E2E8F0',
+        'dark-primary': '#818CF8',
+        'dark-on-primary': '#0F172A',
+        'dark-primary-container': '#1E1B4B',
+        'dark-on-primary-container': '#E0E7FF',
+        'dark-secondary': '#A5B4FC',
+        'dark-on-secondary': '#0F172A',
+        'dark-surface': '#0F172A',
+        'dark-on-surface': '#F8FAFC',
+        'dark-surface-variant': '#1E293B',
+        'dark-on-surface-variant': '#94A3B8',
+        'dark-surface-container-low': '#0F172A',
+        'dark-surface-container': '#1E293B',
+        'dark-surface-container-high': '#334155',
+        'dark-outline': '#334155',
+        'dark-outline-variant': '#1E293B',
+      },
+      borderRadius: {
+        'sm': '4px',
+        'DEFAULT': '6px',
+        'md': '8px',
+        'lg': '10px',
+        'xl': '12px',
+        'full': '9999px',
+      },
+      spacing: {
+        'gutter-xs': '4px',
+        'gutter-sm': '8px',
+        'gutter-md': '16px',
+        'gutter-lg': '24px',
+        'gutter-xl': '32px',
+        'section': '24px',
+        'page-margin': '24px',
+      },
+      fontFamily: {
+        'display': ['"Inter"', 'sans-serif'],
+        'headline': ['"Inter"', 'sans-serif'],
+        'title': ['"Inter"', 'sans-serif'],
+        'body': ['"Inter"', 'sans-serif'],
+        'label': ['"Inter"', 'sans-serif'],
+        'mono': ['"JetBrains Mono"', 'monospace'],
+      },
+      fontSize: {
+        'display-lg': ['36px', { lineHeight: '44px', letterSpacing: '-0.75px', fontWeight: '600' }],
+        'display-lg-mobile': ['28px', { lineHeight: '34px', letterSpacing: '-0.5px', fontWeight: '600' }],
+        'headline-lg': ['24px', { lineHeight: '32px', letterSpacing: '-0.4px', fontWeight: '600' }],
+        'headline-md': ['20px', { lineHeight: '28px', letterSpacing: '-0.25px', fontWeight: '600' }],
+        'title-lg': ['16px', { lineHeight: '24px', letterSpacing: '-0.1px', fontWeight: '600' }],
+        'title-md': ['14px', { lineHeight: '20px', letterSpacing: '0px', fontWeight: '600' }],
+        'body-lg': ['15px', { lineHeight: '22px', letterSpacing: '0px', fontWeight: '400' }],
+        'body-md': ['14px', { lineHeight: '20px', letterSpacing: '0px', fontWeight: '400' }],
+        'body-sm': ['12px', { lineHeight: '16px', letterSpacing: '0px', fontWeight: '400' }],
+        'label-lg': ['14px', { lineHeight: '20px', letterSpacing: '0px', fontWeight: '500' }],
+        'label-md': ['12px', { lineHeight: '16px', letterSpacing: '0.1px', fontWeight: '500' }],
+        'label-sm': ['11px', { lineHeight: '14px', letterSpacing: '0.3px', fontWeight: '600' }],
+        'mono-sm': ['12px', { lineHeight: '18px', letterSpacing: '0px', fontWeight: '400' }],
+      },
+      transitionDuration: {
+        'state-change': '150ms',
+        'surface-enter': '220ms',
+        'surface-exit': '140ms',
+      },
+      transitionDelay: {
+        'state-change': '0ms',
+        'surface-enter': '0ms',
+        'surface-exit': '0ms',
+      },
+      transitionTimingFunction: {
+        'state-change': 'ease-out',
+        'surface-enter': 'cubic-bezier(0.16, 1, 0.3, 1)',
+        'surface-exit': 'cubic-bezier(0.3, 0, 1, 1)',
+      },
+    },
+  },
+};
+if (typeof module !== 'undefined') module.exports = globalThis.tailwind.config;
+</script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=block" rel="stylesheet">
+  <style>.material-symbols-outlined { display: inline-block; width: 1em; height: 1em; line-height: 1 !important; box-sizing: content-box; overflow: hidden; white-space: nowrap; direction: ltr; vertical-align: middle; }</style>
+</head>
+<body class="bg-light-surface-variant text-light-on-surface font-body antialiased">
+
+  <div class="min-h-[1024px] flex flex-col justify-between px-4 py-8 md:py-12" data-stitch-vh="min-h-[1024px]===min-h-screen">
+    <header class="w-full max-w-md mx-auto flex items-center justify-center mb-6">
+      <div class="flex items-center gap-2.5">
+        <div class="w-9 h-9 rounded bg-light-primary text-light-on-primary flex items-center justify-center">
+          <span class="material-symbols-outlined text-[20px]" aria-hidden="true">analytics</span>
+        </div>
+        <span data-design-text-token="headline-md" class="font-headline text-headline-md text-light-on-surface">DataPilot</span>
+      </div>
+    </header>
+
+    <main class="w-full max-w-md mx-auto">
+      <div class="bg-light-surface border border-light-outline-variant rounded-md p-6 md:p-8 flex flex-col gap-gutter-lg">
+        <div class="text-center flex flex-col items-center gap-2">
+          <div class="w-11 h-11 rounded-full bg-light-primary-container text-light-on-primary-container flex items-center justify-center">
+            <span class="material-symbols-outlined text-[22px]" aria-hidden="true">lock_reset</span>
+          </div>
+          <h1 data-design-text-token="headline-lg" class="font-headline text-headline-lg text-light-on-surface">Reset your password</h1>
+          <p data-design-text-token="body-md" class="font-body text-body-md text-light-on-surface-variant text-pretty">
+            Enter the work email tied to your account and we will send you a secure reset link.
+          </p>
+        </div>
+
+        <form id="forgot-form" onsubmit="sendReset(event)" class="flex flex-col gap-gutter-md">
+          <label class="flex flex-col gap-1.5">
+            <span data-design-text-token="label-md" class="font-label text-label-md text-light-on-surface">Work email</span>
+            <input id="reset-email" type="email" placeholder="you@company.com" required class="w-full px-3 py-2 rounded border border-light-outline bg-light-surface text-body-md text-light-on-surface placeholder:text-light-on-surface-variant focus:border-light-primary focus:ring-1 focus:ring-light-primary">
+          </label>
+
+          <button data-component-id="button-primary" data-component-type="button" data-component-variant="primary" type="submit" class="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded bg-light-primary text-light-on-primary hover:bg-light-secondary transition-colors duration-state-change">
+            <span data-design-text-token="label-lg" class="font-label text-label-lg">Send reset link</span>
+          </button>
+        </form>
+
+        <!-- Confirmation Banner (shown after submit) -->
+        <div id="reset-sent-banner" role="status" class="hidden p-4 rounded bg-success-container text-on-success-container flex items-start gap-3">
+          <span class="material-symbols-outlined text-[20px] shrink-0 mt-0.5" aria-hidden="true">mark_email_read</span>
+          <div>
+            <p data-design-text-token="label-md" class="font-label text-label-md">Reset link sent</p>
+            <p data-design-text-token="body-sm" class="font-body text-body-sm mt-0.5">Check your inbox for a link valid for 30 minutes.</p>
+          </div>
+        </div>
+
+        <a href="../auth-login/Login.html" class="inline-flex items-center justify-center gap-1.5 font-label text-label-md text-light-on-surface-variant hover:text-light-on-surface">
+          <span class="material-symbols-outlined text-[16px]" aria-hidden="true">arrow_back</span>
+          <span>Back to sign in</span>
+        </a>
+      </div>
+    </main>
+
+    <footer class="w-full max-w-md mx-auto mt-8 text-center">
+      <p data-design-text-token="body-sm" class="font-body text-body-sm text-light-on-surface-variant">Need help? Contact support@datapilot.io</p>
+    </footer>
+  </div>
+
+  <script>
+    function sendReset(e) {
+      e.preventDefault();
+      document.getElementById('reset-sent-banner').classList.remove('hidden');
+    }
+  </script>
+
+
+</body></html>

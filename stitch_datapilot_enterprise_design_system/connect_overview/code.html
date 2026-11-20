@@ -1,0 +1,434 @@
+<!DOCTYPE html><html lang="en"><head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Connect Overview — DataPilot</title>
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <script id="tailwind-config">/** @type {import('tailwindcss').Config} */
+globalThis.tailwind = globalThis.tailwind || {};
+globalThis.tailwind.config = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        'success': '#15803D',
+        'on-success': '#FFFFFF',
+        'success-container': '#DCFCE7',
+        'on-success-container': '#14532D',
+        'warning': '#B45309',
+        'on-warning': '#FFFFFF',
+        'warning-container': '#FEF3C7',
+        'on-warning-container': '#78350F',
+        'error': '#B91C1C',
+        'on-error': '#FFFFFF',
+        'error-container': '#FEE2E2',
+        'on-error-container': '#7F1D1D',
+        'info': '#1D4ED8',
+        'on-info': '#FFFFFF',
+        'info-container': '#DBEAFE',
+        'on-info-container': '#1E3A8A',
+        'light-primary': '#1E40AF',
+        'light-on-primary': '#FFFFFF',
+        'light-primary-container': '#EEF2FF',
+        'light-on-primary-container': '#1E3A8A',
+        'light-secondary': '#4338CA',
+        'light-on-secondary': '#FFFFFF',
+        'light-surface': '#FFFFFF',
+        'light-on-surface': '#0F172A',
+        'light-surface-variant': '#F8FAFC',
+        'light-on-surface-variant': '#475569',
+        'light-surface-container-low': '#F8FAFC',
+        'light-surface-container': '#F1F5F9',
+        'light-surface-container-high': '#E2E8F0',
+        'light-outline': '#CBD5E1',
+        'light-outline-variant': '#E2E8F0',
+        'dark-primary': '#818CF8',
+        'dark-on-primary': '#0F172A',
+        'dark-primary-container': '#1E1B4B',
+        'dark-on-primary-container': '#E0E7FF',
+        'dark-secondary': '#A5B4FC',
+        'dark-on-secondary': '#0F172A',
+        'dark-surface': '#0F172A',
+        'dark-on-surface': '#F8FAFC',
+        'dark-surface-variant': '#1E293B',
+        'dark-on-surface-variant': '#94A3B8',
+        'dark-surface-container-low': '#0F172A',
+        'dark-surface-container': '#1E293B',
+        'dark-surface-container-high': '#334155',
+        'dark-outline': '#334155',
+        'dark-outline-variant': '#1E293B',
+      },
+      borderRadius: {
+        'sm': '4px',
+        'DEFAULT': '6px',
+        'md': '8px',
+        'lg': '10px',
+        'xl': '12px',
+        'full': '9999px',
+      },
+      spacing: {
+        'gutter-xs': '4px',
+        'gutter-sm': '8px',
+        'gutter-md': '16px',
+        'gutter-lg': '24px',
+        'gutter-xl': '32px',
+        'section': '24px',
+        'page-margin': '24px',
+      },
+      fontFamily: {
+        'display': ['"Inter"', 'sans-serif'],
+        'headline': ['"Inter"', 'sans-serif'],
+        'title': ['"Inter"', 'sans-serif'],
+        'body': ['"Inter"', 'sans-serif'],
+        'label': ['"Inter"', 'sans-serif'],
+        'mono': ['"JetBrains Mono"', 'monospace'],
+      },
+      fontSize: {
+        'display-lg': ['36px', { lineHeight: '44px', letterSpacing: '-0.75px', fontWeight: '600' }],
+        'display-lg-mobile': ['28px', { lineHeight: '34px', letterSpacing: '-0.5px', fontWeight: '600' }],
+        'headline-lg': ['24px', { lineHeight: '32px', letterSpacing: '-0.4px', fontWeight: '600' }],
+        'headline-md': ['20px', { lineHeight: '28px', letterSpacing: '-0.25px', fontWeight: '600' }],
+        'title-lg': ['16px', { lineHeight: '24px', letterSpacing: '-0.1px', fontWeight: '600' }],
+        'title-md': ['14px', { lineHeight: '20px', letterSpacing: '0px', fontWeight: '600' }],
+        'body-lg': ['15px', { lineHeight: '22px', letterSpacing: '0px', fontWeight: '400' }],
+        'body-md': ['14px', { lineHeight: '20px', letterSpacing: '0px', fontWeight: '400' }],
+        'body-sm': ['12px', { lineHeight: '16px', letterSpacing: '0px', fontWeight: '400' }],
+        'label-lg': ['14px', { lineHeight: '20px', letterSpacing: '0px', fontWeight: '500' }],
+        'label-md': ['12px', { lineHeight: '16px', letterSpacing: '0.1px', fontWeight: '500' }],
+        'label-sm': ['11px', { lineHeight: '14px', letterSpacing: '0.3px', fontWeight: '600' }],
+        'mono-sm': ['12px', { lineHeight: '18px', letterSpacing: '0px', fontWeight: '400' }],
+      },
+      transitionDuration: {
+        'state-change': '150ms',
+        'surface-enter': '220ms',
+        'surface-exit': '140ms',
+      },
+      transitionDelay: {
+        'state-change': '0ms',
+        'surface-enter': '0ms',
+        'surface-exit': '0ms',
+      },
+      transitionTimingFunction: {
+        'state-change': 'ease-out',
+        'surface-enter': 'cubic-bezier(0.16, 1, 0.3, 1)',
+        'surface-exit': 'cubic-bezier(0.3, 0, 1, 1)',
+      },
+    },
+  },
+};
+if (typeof module !== 'undefined') module.exports = globalThis.tailwind.config;
+</script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=block" rel="stylesheet">
+  <style>.material-symbols-outlined { display: inline-block; width: 1em; height: 1em; line-height: 1 !important; box-sizing: content-box; overflow: hidden; white-space: nowrap; direction: ltr; vertical-align: middle; }</style>
+</head>
+<body class="bg-light-surface-variant text-light-on-surface font-body antialiased">
+  <div class="min-h-[1024px] flex bg-light-surface-variant" data-stitch-vh="min-h-[1024px]===min-h-screen">
+    <div id="mobile-nav-backdrop" class="hidden fixed inset-0 z-40 bg-light-on-surface/40 lg:hidden" onclick="toggleMobileSidebar(false)"></div>
+
+    <aside id="app-sidebar" class="fixed lg:sticky top-0 left-0 z-50 lg:z-20 min-h-[1024px] w-64 bg-light-surface border-r border-light-outline-variant flex flex-col justify-between transition-[width,transform] duration-state-change ease-state-change -translate-x-full lg:translate-x-0 shrink-0" data-stitch-vh="min-h-[1024px]===min-h-screen">
+      <div class="flex flex-col">
+        <div class="h-14 px-4 border-b border-light-outline-variant flex items-center justify-between gap-2">
+          <a href="../application-shell/ApplicationShell.html" class="flex items-center gap-2.5 overflow-hidden">
+            <div class="w-8 h-8 rounded bg-light-primary text-light-on-primary flex items-center justify-center shrink-0">
+              <span class="material-symbols-outlined text-[18px]" aria-hidden="true">analytics</span>
+            </div>
+            <span data-design-text-token="title-lg" class="sidebar-label font-title text-title-lg text-light-on-surface whitespace-nowrap">DataPilot</span>
+          </a>
+          <button type="button" aria-label="Collapse sidebar" onclick="toggleDesktopSidebar()" class="hidden lg:inline-flex items-center justify-center w-7 h-7 rounded text-light-on-surface-variant hover:bg-light-surface-container">
+            <span id="sidebar-collapse-icon" class="material-symbols-outlined text-[18px]" aria-hidden="true">chevron_left</span>
+          </button>
+          <button type="button" aria-label="Close navigation" onclick="toggleMobileSidebar(false)" class="lg:hidden inline-flex items-center justify-center w-7 h-7 rounded text-light-on-surface-variant hover:bg-light-surface-container">
+            <span class="material-symbols-outlined text-[18px]" aria-hidden="true">close</span>
+          </button>
+        </div>
+        <nav aria-label="Primary navigation" class="p-3 flex flex-col gap-1">
+          <span class="sidebar-section-title px-2.5 py-1.5 font-label text-label-sm uppercase text-light-on-surface-variant">Platform</span>
+          <a href="../application-shell/ApplicationShell.html" class="flex items-center gap-3 px-2.5 py-2 rounded text-light-on-surface-variant hover:bg-light-surface-container hover:text-light-on-surface font-label text-label-lg">
+            <span class="material-symbols-outlined text-[20px] shrink-0" aria-hidden="true">dashboard</span>
+            <span class="sidebar-label whitespace-nowrap">Command Center</span>
+          </a>
+          <a href="../connect-overview/ConnectOverview.html" aria-current="page" class="flex items-center gap-3 px-2.5 py-2 rounded bg-light-primary-container text-light-on-primary-container font-label text-label-lg">
+            <span class="material-symbols-outlined text-[20px] shrink-0" aria-hidden="true">hub</span>
+            <span class="sidebar-label whitespace-nowrap">Connect</span>
+          </a>
+          <a href="#trust" class="flex items-center gap-3 px-2.5 py-2 rounded text-light-on-surface-variant hover:bg-light-surface-container hover:text-light-on-surface font-label text-label-lg">
+            <span class="material-symbols-outlined text-[20px] shrink-0" aria-hidden="true">verified_user</span>
+            <span class="sidebar-label whitespace-nowrap">Trust</span>
+          </a>
+          <a href="#insights" class="flex items-center gap-3 px-2.5 py-2 rounded text-light-on-surface-variant hover:bg-light-surface-container hover:text-light-on-surface font-label text-label-lg">
+            <span class="material-symbols-outlined text-[20px] shrink-0" aria-hidden="true">insights</span>
+            <span class="sidebar-label whitespace-nowrap">Insights</span>
+          </a>
+          <a href="#intelligence" class="flex items-center gap-3 px-2.5 py-2 rounded text-light-on-surface-variant hover:bg-light-surface-container hover:text-light-on-surface font-label text-label-lg">
+            <span class="material-symbols-outlined text-[20px] shrink-0" aria-hidden="true">psychology</span>
+            <span class="sidebar-label whitespace-nowrap">Intelligence</span>
+          </a>
+          <a href="#automate" class="flex items-center gap-3 px-2.5 py-2 rounded text-light-on-surface-variant hover:bg-light-surface-container hover:text-light-on-surface font-label text-label-lg">
+            <span class="material-symbols-outlined text-[20px] shrink-0" aria-hidden="true">bolt</span>
+            <span class="sidebar-label whitespace-nowrap">Automate</span>
+          </a>
+        </nav>
+        <nav aria-label="Administration navigation" class="px-3 py-2 border-t border-light-outline-variant flex flex-col gap-1">
+          <span class="sidebar-section-title px-2.5 py-1.5 font-label text-label-sm uppercase text-light-on-surface-variant">Administration</span>
+          <a href="#users" class="flex items-center gap-3 px-2.5 py-2 rounded text-light-on-surface-variant hover:bg-light-surface-container hover:text-light-on-surface font-label text-label-lg">
+            <span class="material-symbols-outlined text-[20px] shrink-0" aria-hidden="true">group</span>
+            <span class="sidebar-label whitespace-nowrap">Users and Permissions</span>
+          </a>
+          <a href="#audit" class="flex items-center gap-3 px-2.5 py-2 rounded text-light-on-surface-variant hover:bg-light-surface-container hover:text-light-on-surface font-label text-label-lg">
+            <span class="material-symbols-outlined text-[20px] shrink-0" aria-hidden="true">history</span>
+            <span class="sidebar-label whitespace-nowrap">Audit Logs</span>
+          </a>
+          <a href="#settings" class="flex items-center gap-3 px-2.5 py-2 rounded text-light-on-surface-variant hover:bg-light-surface-container hover:text-light-on-surface font-label text-label-lg">
+            <span class="material-symbols-outlined text-[20px] shrink-0" aria-hidden="true">settings</span>
+            <span class="sidebar-label whitespace-nowrap">Settings</span>
+          </a>
+          <a href="#billing" class="flex items-center gap-3 px-2.5 py-2 rounded text-light-on-surface-variant hover:bg-light-surface-container hover:text-light-on-surface font-label text-label-lg">
+            <span class="material-symbols-outlined text-[20px] shrink-0" aria-hidden="true">credit_card</span>
+            <span class="sidebar-label whitespace-nowrap">Billing</span>
+          </a>
+        </nav>
+      </div>
+      <div class="p-3 border-t border-light-outline-variant">
+        <div class="flex items-center gap-2.5 px-2.5 py-2 rounded bg-light-surface-container-low">
+          <span class="w-2 h-2 rounded-full bg-success shrink-0" aria-hidden="true"></span>
+          <div class="sidebar-label overflow-hidden">
+            <p class="font-label text-label-md text-light-on-surface">US-East-1 Prod</p>
+            <p class="font-body text-body-sm text-light-on-surface-variant">All systems operational</p>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="flex-1 min-w-0 flex flex-col">
+      <header class="sticky top-0 z-30 h-14 bg-light-surface border-b border-light-outline-variant px-4 lg:px-6 flex items-center justify-between gap-gutter-md">
+        <div class="flex items-center gap-gutter-sm min-w-0">
+          <button type="button" aria-label="Open navigation" onclick="toggleMobileSidebar(true)" class="lg:hidden inline-flex items-center justify-center w-9 h-9 rounded text-light-on-surface-variant hover:bg-light-surface-container">
+            <span class="material-symbols-outlined text-[20px]" aria-hidden="true">menu</span>
+          </button>
+          <button type="button" class="inline-flex items-center gap-2 px-2.5 py-1.5 rounded border border-light-outline-variant bg-light-surface hover:bg-light-surface-container-low">
+            <span class="w-5 h-5 rounded-sm bg-light-primary text-light-on-primary flex items-center justify-center font-label text-label-sm">AC</span>
+            <span class="font-label text-label-md text-light-on-surface hidden sm:inline">Acme Global Corp</span>
+            <span class="material-symbols-outlined text-[16px] text-light-on-surface-variant" aria-hidden="true">expand_more</span>
+          </button>
+          <nav aria-label="Breadcrumb" class="hidden md:flex items-center gap-1.5 pl-2 border-l border-light-outline-variant">
+            <span class="font-body text-body-sm text-light-on-surface-variant">Connect</span>
+            <span class="material-symbols-outlined text-[16px] text-light-on-surface-variant" aria-hidden="true">chevron_right</span>
+            <span class="font-label text-label-md text-light-on-surface">Overview</span>
+          </nav>
+        </div>
+        <div class="flex items-center gap-gutter-sm">
+          <div class="relative hidden sm:flex items-center">
+            <span class="material-symbols-outlined text-[18px] text-light-on-surface-variant absolute left-3" aria-hidden="true">search</span>
+            <input type="search" aria-label="Global search" placeholder="Search connections..." class="w-56 lg:w-64 pl-9 pr-11 py-1.5 rounded border border-light-outline bg-light-surface-container-low text-body-sm text-light-on-surface placeholder:text-light-on-surface-variant focus:bg-light-surface focus:border-light-primary focus:ring-1 focus:ring-light-primary">
+            <kbd class="absolute right-2 px-1.5 py-0.5 rounded-sm bg-light-surface border border-light-outline text-label-sm text-light-on-surface-variant font-mono">⌘K</kbd>
+          </div>
+          <button type="button" aria-label="Notifications" class="relative inline-flex items-center justify-center w-9 h-9 rounded text-light-on-surface-variant hover:bg-light-surface-container">
+            <span class="material-symbols-outlined text-[20px]" aria-hidden="true">notifications</span>
+            <span class="absolute top-2 right-2 w-2 h-2 rounded-full bg-error"></span>
+          </button>
+          <div class="w-7 h-7 rounded-full bg-light-primary-container text-light-on-primary-container flex items-center justify-center font-label text-label-md">EW</div>
+        </div>
+      </header>
+
+      <main class="flex-1 p-4 md:p-6 max-w-[1440px] w-full mx-auto flex flex-col gap-section">
+        <!-- Page Header & Sub-nav -->
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-gutter-md">
+          <div>
+            <h1 data-design-text-token="headline-lg" class="font-headline text-headline-lg text-light-on-surface">Connect</h1>
+            <p data-design-text-token="body-md" class="font-body text-body-md text-light-on-surface-variant mt-1">
+              Manage read-only data connections, file uploads, and sync schedules across your business tools.
+            </p>
+          </div>
+          <div class="flex flex-wrap items-center gap-gutter-sm">
+            <a href="../connect-health/ConnectionHealth.html" class="inline-flex items-center gap-2 px-3.5 py-2 rounded border border-light-outline bg-light-surface text-light-on-surface hover:bg-light-surface-container font-label text-label-lg">
+              <span class="material-symbols-outlined text-[18px]" aria-hidden="true">monitor_heart</span>
+              <span>Connection health</span>
+            </a>
+            <a href="../connect-upload-files/UploadFiles.html" class="inline-flex items-center gap-2 px-3.5 py-2 rounded border border-light-outline bg-light-surface text-light-on-surface hover:bg-light-surface-container font-label text-label-lg">
+              <span class="material-symbols-outlined text-[18px]" aria-hidden="true">upload_file</span>
+              <span>Upload files</span>
+            </a>
+            <a href="../connect-marketplace/DataSourceMarketplace.html" data-component-id="button-primary" data-component-type="button" data-component-variant="primary" class="inline-flex items-center gap-2 px-4 py-2 rounded bg-light-primary text-light-on-primary hover:bg-light-secondary font-label text-label-lg">
+              <span class="material-symbols-outlined text-[18px]" aria-hidden="true">add</span>
+              <span>Add data source</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- KPI Summary Row -->
+        <section class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-gutter-md items-stretch">
+          <article data-component-id="card-elevated" data-component-type="card" data-component-variant="elevated" class="bg-light-surface border border-light-outline-variant rounded-md p-5 flex flex-col justify-between gap-gutter-sm">
+            <header class="flex items-center justify-between">
+              <span class="font-label text-label-md text-light-on-surface-variant">Connected sources</span>
+              <span class="material-symbols-outlined text-[18px] text-light-on-surface-variant" aria-hidden="true">hub</span>
+            </header>
+            <p class="font-headline text-headline-lg text-light-on-surface tabular-nums">7</p>
+            <span class="font-body text-body-sm text-light-on-surface-variant">Databases, cloud &amp; files</span>
+          </article>
+          <article data-component-id="card-elevated" data-component-type="card" data-component-variant="elevated" class="bg-light-surface border border-light-outline-variant rounded-md p-5 flex flex-col justify-between gap-gutter-sm">
+            <header class="flex items-center justify-between">
+              <span class="font-label text-label-md text-light-on-surface-variant">Records processed (24h)</span>
+              <span class="material-symbols-outlined text-[18px] text-light-on-surface-variant" aria-hidden="true">database</span>
+            </header>
+            <p class="font-headline text-headline-lg text-light-on-surface tabular-nums">1,428,910</p>
+            <span class="font-body text-body-sm text-success">Read-only mode active</span>
+          </article>
+          <article data-component-id="card-elevated" data-component-type="card" data-component-variant="elevated" class="bg-light-surface border border-light-outline-variant rounded-md p-5 flex flex-col justify-between gap-gutter-sm">
+            <header class="flex items-center justify-between">
+              <span class="font-label text-label-md text-light-on-surface-variant">Last successful sync</span>
+              <span class="material-symbols-outlined text-[18px] text-light-on-surface-variant" aria-hidden="true">schedule</span>
+            </header>
+            <p class="font-headline text-headline-lg text-light-on-surface tabular-nums">4m ago</p>
+            <span class="font-body text-body-sm text-light-on-surface-variant tabular-nums">Nov 20, 2026 · 14:28 UTC</span>
+          </article>
+          <article data-component-id="card-elevated" data-component-type="card" data-component-variant="elevated" class="bg-light-surface border border-light-outline-variant rounded-md p-5 flex flex-col justify-between gap-gutter-sm">
+            <header class="flex items-center justify-between">
+              <span class="font-label text-label-md text-light-on-surface-variant">Attention required</span>
+              <span class="material-symbols-outlined text-[18px] text-error" aria-hidden="true">error</span>
+            </header>
+            <p class="font-headline text-headline-lg text-light-on-surface tabular-nums">1</p>
+            <span class="font-body text-body-sm text-error">Amazon S3 credential expired</span>
+          </article>
+        </section>
+
+        <!-- Actionable Error Banner -->
+        <div role="alert" class="bg-light-surface border border-error rounded-md p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div class="flex items-start gap-3">
+            <span class="w-8 h-8 rounded bg-error-container text-on-error-container flex items-center justify-center shrink-0">
+              <span class="material-symbols-outlined text-[18px]" aria-hidden="true">error</span>
+            </span>
+            <div>
+              <p class="font-title text-title-md text-light-on-surface">Amazon S3 — Raw Orders sync failed</p>
+              <p class="font-body text-body-sm text-light-on-surface-variant">IAM access key expired at 09:44 UTC. Rotate credentials or retry the connection.</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <a href="../connect-details/ConnectionDetails.html" class="px-3 py-1.5 rounded border border-light-outline bg-light-surface text-light-on-surface hover:bg-light-surface-container font-label text-label-md">Rotate credentials</a>
+            <a href="../connect-sync-progress/SyncProgress.html" class="px-3 py-1.5 rounded bg-error text-on-error hover:opacity-90 font-label text-label-md">Retry sync</a>
+          </div>
+        </div>
+
+        <!-- Active Connections Table -->
+        <section data-component-id="table-interactive" data-component-type="table" data-component-variant="interactive" class="bg-light-surface border border-light-outline-variant rounded-md overflow-hidden">
+          <div class="p-4 border-b border-light-outline-variant flex flex-wrap items-center justify-between gap-4">
+            <div class="flex flex-wrap items-center gap-2">
+              <div class="relative">
+                <span class="material-symbols-outlined text-[18px] text-light-on-surface-variant absolute left-3 top-1/2 -translate-y-1/2" aria-hidden="true">search</span>
+                <input type="search" placeholder="Filter connections..." class="pl-9 pr-3 py-1.5 rounded border border-light-outline bg-light-surface text-body-sm text-light-on-surface w-60 focus:border-light-primary focus:ring-1 focus:ring-light-primary">
+              </div>
+              <a href="../connect-sync-history/SyncHistory.html" class="px-3 py-1.5 rounded border border-light-outline text-light-on-surface hover:bg-light-surface-container font-label text-label-md">View sync history</a>
+            </div>
+            <span class="font-body text-body-sm text-light-on-surface-variant tabular-nums">Showing 5 active connections</span>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse">
+              <thead class="bg-light-surface-container border-b border-light-outline-variant">
+                <tr>
+                  <th class="px-4 py-3 font-label text-label-md text-light-on-surface-variant">Connection</th>
+                  <th class="px-4 py-3 font-label text-label-md text-light-on-surface-variant">Type &amp; Access</th>
+                  <th class="px-4 py-3 font-label text-label-md text-light-on-surface-variant">Status</th>
+                  <th class="px-4 py-3 font-label text-label-md text-light-on-surface-variant text-right">Records processed</th>
+                  <th class="px-4 py-3 font-label text-label-md text-light-on-surface-variant text-right">Last successful sync</th>
+                  <th class="px-4 py-3 font-label text-label-md text-light-on-surface-variant text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-light-outline-variant">
+                <tr class="hover:bg-light-surface-container-low">
+                  <td class="px-4 py-3">
+                    <a href="../connect-details/ConnectionDetails.html" class="font-title text-title-md text-light-primary hover:underline">PostgreSQL — Production ERP</a>
+                    <p class="font-mono text-mono-sm text-light-on-surface-variant">db-prod-us-east.internal</p>
+                  </td>
+                  <td class="px-4 py-3 font-body text-body-sm text-light-on-surface">PostgreSQL · Read-only</td>
+                  <td class="px-4 py-3">
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-sm bg-success-container text-on-success-container font-label text-label-sm">
+                      <span class="w-1.5 h-1.5 rounded-full bg-success"></span> Healthy
+                    </span>
+                  </td>
+                  <td class="px-4 py-3 text-right font-body text-body-md tabular-nums">1,120,400</td>
+                  <td class="px-4 py-3 text-right font-body text-body-sm text-light-on-surface-variant tabular-nums">Nov 20, 14:28 UTC</td>
+                  <td class="px-4 py-3 text-right"><a href="../connect-details/ConnectionDetails.html" class="font-label text-label-md text-light-primary hover:underline">Manage</a></td>
+                </tr>
+                <tr class="hover:bg-light-surface-container-low">
+                  <td class="px-4 py-3">
+                    <a href="../connect-details/ConnectionDetails.html" class="font-title text-title-md text-light-primary hover:underline">MySQL — Warehouse Inventory</a>
+                    <p class="font-mono text-mono-sm text-light-on-surface-variant">inv-replica.internal</p>
+                  </td>
+                  <td class="px-4 py-3 font-body text-body-sm text-light-on-surface">MySQL · Read-only</td>
+                  <td class="px-4 py-3">
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-sm bg-success-container text-on-success-container font-label text-label-sm">
+                      <span class="w-1.5 h-1.5 rounded-full bg-success"></span> Healthy
+                    </span>
+                  </td>
+                  <td class="px-4 py-3 text-right font-body text-body-md tabular-nums">214,300</td>
+                  <td class="px-4 py-3 text-right font-body text-body-sm text-light-on-surface-variant tabular-nums">Nov 20, 14:15 UTC</td>
+                  <td class="px-4 py-3 text-right"><a href="../connect-details/ConnectionDetails.html" class="font-label text-label-md text-light-primary hover:underline">Manage</a></td>
+                </tr>
+                <tr class="hover:bg-light-surface-container-low">
+                  <td class="px-4 py-3">
+                    <a href="../connect-details/ConnectionDetails.html" class="font-title text-title-md text-light-primary hover:underline">Databricks — Analytics Lakehouse</a>
+                    <p class="font-mono text-mono-sm text-light-on-surface-variant">dbc-workspace-01</p>
+                  </td>
+                  <td class="px-4 py-3 font-body text-body-sm text-light-on-surface">Databricks · Read-only</td>
+                  <td class="px-4 py-3">
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-sm bg-warning-container text-on-warning-container font-label text-label-sm">
+                      <span class="w-1.5 h-1.5 rounded-full bg-warning"></span> High latency
+                    </span>
+                  </td>
+                  <td class="px-4 py-3 text-right font-body text-body-md tabular-nums">46,000</td>
+                  <td class="px-4 py-3 text-right font-body text-body-sm text-light-on-surface-variant tabular-nums">Nov 20, 13:50 UTC</td>
+                  <td class="px-4 py-3 text-right"><a href="../connect-details/ConnectionDetails.html" class="font-label text-label-md text-light-primary hover:underline">Manage</a></td>
+                </tr>
+                <tr class="hover:bg-light-surface-container-low">
+                  <td class="px-4 py-3">
+                    <a href="../connect-details/ConnectionDetails.html" class="font-title text-title-md text-light-primary hover:underline">Amazon S3 — Raw Orders</a>
+                    <p class="font-mono text-mono-sm text-light-on-surface-variant">s3://acme-datapilot-orders</p>
+                  </td>
+                  <td class="px-4 py-3 font-body text-body-sm text-light-on-surface">Amazon S3 · Read-only</td>
+                  <td class="px-4 py-3">
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-sm bg-error-container text-on-error-container font-label text-label-sm">
+                      <span class="w-1.5 h-1.5 rounded-full bg-error"></span> Failed
+                    </span>
+                  </td>
+                  <td class="px-4 py-3 text-right font-body text-body-md tabular-nums">0 (today)</td>
+                  <td class="px-4 py-3 text-right font-body text-body-sm text-light-on-surface-variant tabular-nums">Nov 19, 22:00 UTC</td>
+                  <td class="px-4 py-3 text-right"><a href="../connect-details/ConnectionDetails.html" class="font-label text-label-md text-error hover:underline">Fix</a></td>
+                </tr>
+                <tr class="hover:bg-light-surface-container-low">
+                  <td class="px-4 py-3">
+                    <a href="../connect-upload-files/UploadFiles.html" class="font-title text-title-md text-light-primary hover:underline">Q4 Regional Sales Export</a>
+                    <p class="font-mono text-mono-sm text-light-on-surface-variant">orders_q4_2026.csv</p>
+                  </td>
+                  <td class="px-4 py-3 font-body text-body-sm text-light-on-surface">CSV File · Read-only</td>
+                  <td class="px-4 py-3">
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-sm bg-success-container text-on-success-container font-label text-label-sm">
+                      <span class="w-1.5 h-1.5 rounded-full bg-success"></span> Verified
+                    </span>
+                  </td>
+                  <td class="px-4 py-3 text-right font-body text-body-md tabular-nums">48,210</td>
+                  <td class="px-4 py-3 text-right font-body text-body-sm text-light-on-surface-variant tabular-nums">Nov 20, 11:05 UTC</td>
+                  <td class="px-4 py-3 text-right"><a href="../connect-upload-files/UploadFiles.html" class="font-label text-label-md text-light-primary hover:underline">Inspect</a></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    function toggleDesktopSidebar() {
+      const s = document.getElementById('app-sidebar');
+      const collapsed = s.classList.toggle('w-16');
+      s.classList.toggle('w-64', !collapsed);
+      document.getElementById('sidebar-collapse-icon').textContent = collapsed ? 'chevron_right' : 'chevron_left';
+      s.querySelectorAll('.sidebar-label, .sidebar-section-title').forEach(el => el.classList.toggle('hidden', collapsed));
+    }
+    function toggleMobileSidebar(open) {
+      document.getElementById('app-sidebar').classList.toggle('-translate-x-full', !open);
+      document.getElementById('mobile-nav-backdrop').classList.toggle('hidden', !open);
+    }
+  </script>
+
+
+</body></html>
