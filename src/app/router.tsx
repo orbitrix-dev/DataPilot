@@ -4,6 +4,7 @@ import { adminNav, platformNav } from '../components/layout/navigation'
 import { ModulePlaceholder } from '../pages/ModulePlaceholder'
 import { NotFound } from '../pages/NotFound'
 import { designSystemRoutes } from '../features/design-system/routes'
+import { authRoutes } from '../features/auth/routes'
 
 /**
  * Feature modules register their routes here.
@@ -18,6 +19,7 @@ const shellRoutes: RouteObject[] = [
 
 const publicRoutes: RouteObject[] = [
   // feature:public-routes
+  ...authRoutes,
 ]
 
 const featurePaths = new Set(shellRoutes.map((r) => r.path?.split('/')[0]))
