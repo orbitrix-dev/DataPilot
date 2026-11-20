@@ -1,6 +1,6 @@
 # DataPilot front end: build notes
 
-This document covers the first implementation of the DataPilot web app from the Stitch designs in [`stitch_datapilot_enterprise_design_system/`](../stitch_datapilot_enterprise_design_system/). All 38 designed screens are built and render without console errors. The backend is not connected yet: every API call is simulated.
+This document covers the first implementation of the DataPilot web app from the Stitch designs in [`stitch_datapilot_enterprise_design_system/`](../stitch_datapilot_enterprise_design_system/). All 46 designed screens are built and render without console errors. The backend is not connected yet: every API call is simulated.
 
 ## Branches
 
@@ -17,12 +17,13 @@ Each area of work was built on its own branch and merged into `main` with a merg
 | `docs/build-notes` | This document |
 | `feature/trust` | The Trust module: overview, quality dashboard, quality rules, freshness, schema changes, lineage, incidents, incident details, root cause analysis and business impact |
 | `feature/insights` | The Insights module: executive dashboard, sales, customer, product, inventory, purchase and receivables analytics, metric explorer, reports library and report details |
+| `feature/intelligence` | The Intelligence module: assistant home, evidence-backed answers (conversation, chart, anomaly and recommendation layouts), forecasting workspace, explanation & evidence, and conversation history |
 
 ## How the design maps to code
 
 - **Design tokens.** [`tailwind.config.js`](../tailwind.config.js) is copied unchanged from the Stitch export; every screen used the same config. Tailwind classes from the design HTML (`bg-light-primary`, `text-title-md`, `gap-gutter-md`, …) therefore work as-is in the components.
 - **App shell.** In-app pages render inside [`AppShell`](../src/components/layout/AppShell.tsx), which provides the sidebar, the top bar and the page width. Each page sets its breadcrumb and browser tab title with `usePageChrome(...)`. Full-screen flows (auth and onboarding) render outside the shell.
-- **Routing.** [`src/app/router.tsx`](../src/app/router.tsx) combines the route list exported by each feature (`authRoutes`, `onboardingRoutes`, `connectRoutes`, `trustRoutes`, `insightsRoutes`, `designSystemRoutes`). Sidebar modules with no design yet (Intelligence, Automate, admin pages) show a placeholder page.
+- **Routing.** [`src/app/router.tsx`](../src/app/router.tsx) combines the route list exported by each feature (`authRoutes`, `onboardingRoutes`, `connectRoutes`, `trustRoutes`, `insightsRoutes`, `intelligenceRoutes`, `designSystemRoutes`). Sidebar modules with no design yet (Automate, admin pages) show a placeholder page.
 - **Feature folders.** Each product area lives in `src/features/<area>/` with its own pages, components and mock data. Shared building blocks are in `src/components/ui/` (Icon, Button, Badge, Card, Modal, Drawer, Toast).
 
 ## Routes
@@ -70,6 +71,15 @@ Each area of work was built on its own branch and merged into `main` with a merg
 | | `/insights/metrics?metric=&by=` | `insights_metric_explorer` |
 | | `/insights/reports` | `insights_reports_library` |
 | | `/insights/reports/:reportId` | `insights_report_details` (designed for the gross margin report; the other three use the same layout) |
+| Intelligence | `/intelligence` | `intelligence_home` |
+| | `/intelligence/ask?q=` | *no screen: records the question, then opens the matching answer or a "no grounded answer" reply* |
+| | `/intelligence/answers/overdue-customers` | `intelligence_ai_assistant_conversation` |
+| | `/intelligence/answers/sales-comparison` | `intelligence_query_result_with_charts` (top-products and growth-customers use the same layout) |
+| | `/intelligence/answers/revenue-decline` | `intelligence_anomaly_explanation` |
+| | `/intelligence/answers/stockout-risk` | `intelligence_recommendation_details` |
+| | `/intelligence/forecast` | `intelligence_forecasting_workspace` |
+| | `/intelligence/evidence/:answerId` | `intelligence_explanation_evidence_panel` (designed for the sales comparison; every answer has its own evidence) |
+| | `/intelligence/history` | `intelligence_conversation_history` |
 
 ## Changes from the static designs
 
@@ -85,11 +95,15 @@ The designs are static HTML, so some behaviour had to be decided during the buil
 - **Insights ↔ Trust.** Insights reads the Trust store. While INC-204 is open, the receivables KPI, the receivables banner, the DSO metric and the aging report are flagged; resolving it in Trust clears them. The "3h stale" chips follow `warehouse.stock_levels` and turn on-time after a Freshness refresh.
 - **Insights data.** The designs show 2–3 sample rows per table. More rows were added so the totals agree across pages: regions sum to $2,841,920, category margins average to 24.8%, aging buckets sum to $412,680, and order counts sum to 1,942. Two reports (Receivables Aging, Supplier Delivery Scorecard) were added to the library.
 - **Insights behaviour.** The date range is shown as a fixed label (only 30-day data exists). The metric explorer computes its breakdown from the same data, keeps the selection in the URL, and explains when a split is not meaningful (e.g. AOV by category). The sales trend badge reads "vs prior 30d" (the design said "YoY", which contradicted the dashboard). Export CSV downloads the report table. Customer and product tables sort; the inventory table filters. "Explore by domain" also links Customers and Products, which the design only reached through Sales.
+- **Intelligence answers.** There is no language model behind the mock. Each question type has a fixed answer built from the Insights data, and typed questions are matched by keyword (`src/features/intelligence/match.ts`). Anything unmatched gets an explicit "no grounded answer" reply instead of a guess. Example questions and follow-up chips go through `/intelligence/ask`, so they show up in Conversation History along with the Trust status at the time they were asked.
+- **Intelligence ↔ Trust.** The overdue-payments answer is qualified while INC-204 is open. The anomaly and stock-out answers are qualified while `warehouse.stock_levels` is stale. Resolving the incident or refreshing the feed in Trust turns them Verified. History rows keep the status from when the question was asked.
+- **Intelligence data fixes.** The designs contradicted the existing data in places, and the existing data was kept. The stale warehouse feed is INC-203 (the design said INC-204, the duplicate-invoice incident). SKU-4410 and SKU-2108 use their Insights names, stock levels and days of cover, so suggested orders are computed (620 cases, 90 units) instead of 600/350. "Apex accounts for 40%" refers to the $70,380 balance over 60 days, not the 90+ bucket (where Apex is 100%). The anomaly answer compares this week's Mon–Fri wholesale invoices (Nov 16–20, not Nov 11–15) with a Mon–Fri baseline of $308,600, because the design's $336,600 baseline was higher than the forecast's observed full weeks. Forecast horizons of 30/60/90 days are 4/8/12 forecast weeks. Growth figures are measured against the same number of observed weeks (the design's 60-day +7.2% works out to +7.0%), and the disclosure names the weeks actually shown. Dataset names follow Trust (`public.orders`, `public.invoices`, `warehouse.stock_levels`) instead of the designs' `erp_*`/`wms_*` names. The forecast's "Trust score 98.4%" became the Sales & Orders check count, since Trust shows ~94% overall.
+- **Intelligence behaviour.** "Create PO draft" stores the draft for the session (it can be discarded) and says nothing was sent to suppliers. The evidence page has an answer picker and a sources table with live Trust freshness. Follow-ups that pointed at unrelated screens (e.g. "Draft reminder schedule" opening the stock-out recommendation) were replaced with ones that have real answers or Insights pages.
 - **Connect state.** Retrying a sync, rotating credentials, adding a connection or removing one updates every Connect page during the session.
 
 ## Not done yet
 
-- **No real backend.** Simulated calls live in `src/features/auth/api.ts` and `src/features/connect/store.ts` `src/features/trust/store.ts` and the static data in `src/features/insights/data.ts`, and should be replaced with real API calls.
+- **No real backend.** Simulated calls live in `src/features/auth/api.ts` and `src/features/connect/store.ts` `src/features/trust/store.ts` the static data in `src/features/insights/data.ts` and `src/features/intelligence/data.ts`, and should be replaced with real API calls.
 - **No sessions or route protection.** Shell pages are reachable without signing in.
 - **Dark mode.** The design spec defines dark tokens, but no dark-mode screens were designed.
 - **No automated tests.** Each page was checked in a headless browser, but no test suite exists.
@@ -113,4 +127,5 @@ npm run lint
 6. **Design system page.** On `/design-system`, open and save the side panel, confirm the dialog, and filter the table.
 7. **Trust.** On `/trust/incidents/INC-204`, mark it resolved. The overview incident count, lineage nodes and impact table update. Refresh `warehouse.stock_levels` on `/trust/freshness`, and create a rule on `/trust/rules` (submit empty first to see validation).
 8. **Insights.** On `/insights/receivables`, follow "Inspect incident", mark INC-204 resolved, then return via the sidebar: the banner and the dashboard's Trust chip are gone. Refresh `warehouse.stock_levels` on `/trust/freshness` and the inventory chips turn on-time. Try every metric/dimension pair in `/insights/metrics` and export a CSV from a report.
-9. **App shell.** Switch organization, open notifications, collapse the sidebar, check a mobile-width layout, and sign out.
+9. **Intelligence.** Ask each example question on `/intelligence`, then type something unsupported (e.g. "employee churn") to see the no-answer reply. Switch forecast horizons, create and discard a PO draft, and filter or search `/intelligence/history`. Resolve INC-204 and refresh `warehouse.stock_levels` in Trust. The overdue, anomaly and stock-out answers should turn Verified.
+10. **App shell.** Switch organization, open notifications, collapse the sidebar, check a mobile-width layout, and sign out.
