@@ -6,6 +6,7 @@ import { NotFound } from '../pages/NotFound'
 import { designSystemRoutes } from '../features/design-system/routes'
 import { authRoutes } from '../features/auth/routes'
 import { onboardingRoutes } from '../features/onboarding/routes'
+import { connectRoutes } from '../features/connect/routes'
 
 /**
  * Feature modules register their routes here.
@@ -16,6 +17,7 @@ import { onboardingRoutes } from '../features/onboarding/routes'
 const shellRoutes: RouteObject[] = [
   // feature:shell-routes
   ...designSystemRoutes,
+  ...connectRoutes,
 ]
 
 const publicRoutes: RouteObject[] = [
