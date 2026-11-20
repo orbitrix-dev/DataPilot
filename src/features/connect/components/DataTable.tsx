@@ -10,6 +10,8 @@ export type Column<T> = {
   className?: string
   /** Classes for the <td> (defaults to `px-4 py-3`). */
   cellClassName?: string
+  /** Set on sortable columns so screen readers announce the sort state. */
+  ariaSort?: 'ascending' | 'descending' | 'none'
   cell: (row: T) => ReactNode
 }
 
@@ -33,7 +35,7 @@ export function DataTable<T>({
         <thead className="bg-light-surface-container border-b border-light-outline-variant">
           <tr>
             {columns.map((c) => (
-              <th key={c.key} scope="col" className={cn(thClass, c.align === 'right' && 'text-right', c.className)}>
+              <th key={c.key} scope="col" aria-sort={c.ariaSort} className={cn(thClass, c.align === 'right' && 'text-right', c.className)}>
                 {c.header}
               </th>
             ))}

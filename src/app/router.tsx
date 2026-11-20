@@ -8,6 +8,7 @@ import { authRoutes } from '../features/auth/routes'
 import { onboardingRoutes } from '../features/onboarding/routes'
 import { connectRoutes } from '../features/connect/routes'
 import { trustRoutes } from '../features/trust/routes'
+import { insightsRoutes } from '../features/insights/routes'
 
 /**
  * Feature modules register their routes here.
@@ -20,6 +21,7 @@ const shellRoutes: RouteObject[] = [
   ...designSystemRoutes,
   ...connectRoutes,
   ...trustRoutes,
+  ...insightsRoutes,
 ]
 
 const publicRoutes: RouteObject[] = [
