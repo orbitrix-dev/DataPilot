@@ -89,8 +89,8 @@ export function LoginPage() {
       </div>
 
       <div className="relative flex items-center justify-center">
-        <div className="border-t border-light-outline-variant w-full" />
-        <span className="px-3 bg-light-surface font-body text-body-sm text-light-on-surface-variant">or</span>
+        <div className="absolute inset-x-0 top-1/2 border-t border-light-outline-variant" aria-hidden="true" />
+        <span className="relative px-3 bg-light-surface font-body text-body-sm text-light-on-surface-variant">or</span>
       </div>
 
       <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-gutter-md">
