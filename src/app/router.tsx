@@ -12,6 +12,7 @@ import { insightsRoutes } from '../features/insights/routes'
 import { intelligenceRoutes } from '../features/intelligence/routes'
 import { automateRoutes } from '../features/automate/routes'
 import { commandCenterRoutes } from '../features/command-center/routes'
+import { adminRoutes } from '../features/admin/routes'
 
 /**
  * Feature modules register their routes here.
@@ -28,6 +29,7 @@ const shellRoutes: RouteObject[] = [
   ...insightsRoutes,
   ...intelligenceRoutes,
   ...automateRoutes,
+  ...adminRoutes,
 ]
 
 const publicRoutes: RouteObject[] = [

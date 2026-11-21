@@ -60,7 +60,7 @@ function dayOf(ms: number): string {
 }
 
 /** Builds the time fields. Items created during the session sort first and show the local clock, like the stores that created them. */
-function when(label: string, at?: number): Pick<Activity, 'time' | 'day' | 'sort'> {
+export function when(label: string, at?: number): Pick<Activity, 'time' | 'day' | 'sort'> {
   if (at) {
     const d = new Date(at)
     return { time: `Today, ${p2(d.getHours())}:${p2(d.getMinutes())}`, day: 'This session', sort: 1e15 + at }

@@ -25,6 +25,8 @@ export type Connection = {
   credentials: CredentialField[]
   /** Short reason surfaced in banners when status is `failed`. */
   issue?: string
+  /** Last credential rotation: a time label, plus `at` (ms) when it happened during the session. Read by Admin. */
+  rotated?: { time: string; by: string; at?: number }
 }
 
 export const connections: Connection[] = [
@@ -39,6 +41,7 @@ export const connections: Connection[] = [
     records: 1120400,
     lastSync: '2026-11-20T14:28:00Z',
     accessLevel: 'Read-only (TLS 1.3)',
+    rotated: { time: '2026-11-19T09:15:00Z', by: 'Elena Vance' },
     credentials: [
       { label: 'Username', value: 'datapilot_ro' },
       { label: 'Password / Secret', value: '••••••••••••••••', secret: true },
