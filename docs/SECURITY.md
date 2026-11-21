@@ -1,8 +1,8 @@
-# Authentication and security (Stages 3B.1–3B.2)
+# Authentication and security (Stages 3B.1–3B.3)
 
 How people and programs prove who they are to the DataPilot API, what is stored, and what is **not** implemented yet. Database details are in [DATABASE.md](DATABASE.md); operator commands in [backend/README.md](../backend/README.md#calling-it).
 
-> **Production is still blocked.** Sign-in abuse protection (Stage 3B.3) and SSO are not implemented, and the API refuses to start with `DP_ENV=prod` while that matters. See [Not implemented](#not-implemented-and-how-that-is-enforced).
+> **Production is still blocked.** SSO is not implemented (tenants with `enforce_sso` block startup) and audit retention isn't enforced; the API refuses to start with `DP_ENV=prod` while that holds. Abuse protection is implemented since Stage 3B.3 and is itself checked at startup. See [Not implemented](#not-implemented-and-how-that-is-enforced).
 
 ## Credentials at a glance
 
@@ -97,9 +97,39 @@ A rejected request rolls its transaction back, so its audit event would vanish w
 | `api-key.step_up_failed` | key creation refused | `step_up_invalid`, `step_up_not_enrolled` |
 | `user.recovery_codes_step_up_failed` | recovery-code regeneration refused (403 wrong/reused code, 409 MFA not enabled) | `recovery_code_regeneration_step_up_failed`, `recovery_code_regeneration_not_enrolled` |
 
-Events carry the reason, the account and tenant when known, and the client address. They never carry the password, code, token or key presented, nor the email typed for an account that doesn't exist (it's attacker-controlled and is sometimes a mistyped password). Events for unknown accounts and keys have no tenant (global). Until 3B.3 adds rate limiting, a flood writes one row per attempt; that is one reason production stays blocked. Production also refuses to start without a writer, or with one that exposes no `health()`.
+Events carry the reason, the account and tenant when known, and the client address. They never carry the password, code, token or key presented, nor the email typed for an account that doesn't exist (it's attacker-controlled and is sometimes a mistyped password). Events for unknown accounts and keys have no tenant (global). The rate limits (below) bound how many of these one source can cause: at most the limit per window per address or account, then one `*.throttled` event per block instead of one row per refused attempt. Production also refuses to start without a writer, or with one that exposes no `health()`.
 
 **Write failures are observable.** A write that fails never breaks the request, but it isn't silent either: the writer logs an ERROR (action code and exception class only), the caller logs a WARNING (`Security event NOT persisted: action=… reason=…`), and bounded counters (events written/failed, consecutive failures, last success/failure time) are served by `GET /healthz/security-audit`, which answers **200 only after a successful write with no failure since**: **503 `unknown`** before the first write (a new writer has proven nothing), **503 `degraded`** while the most recent write failed, 503 `not_configured` without a writer. On a quiet system the state stays `unknown` until the first rejected request is recorded. Point monitoring at it. Nothing is queued in memory: an event that failed is lost, and the counters say so. Startup doesn't probe the writer; the endpoint is the runtime signal.
+
+## Abuse protection (Stage 3B.3)
+
+Shared, persistent counters in PostgreSQL (`auth_throttle_buckets`, `app/modules/auth/throttle.py`). Every application instance reads and writes the same rows, and they survive restarts; no process-local counter decides anything.
+
+**How a check works.** Before a password or code is verified, the attempt is counted with one atomic `INSERT … ON CONFLICT (scope, subject_hash) DO UPDATE … RETURNING`, in its own short transaction on the limiter's own pool (3 connections, 1 s wait, 2 s connect and statement timeouts). The upsert takes the row lock, so concurrent attempts, across any number of instances, are serialized by PostgreSQL. No race admits more than the limit (tested with 40 concurrent attempts over 4 limiter instances). Counting first also caps the Argon2 work an attacker can trigger. Counts commit even though a refused request's own transaction rolls back.
+
+| Scope | Subject | Default | Policy |
+|---|---|---|---|
+| `login_ip` | client address (IPv6 by /64) | 20 per 10 min | every sign-in or enrolment password check, any outcome; then 429 until the window ends |
+| `login_account` | normalized email | 5 | wrong passwords in a row (a correct password resets); then progressive blocks |
+| `mfa` | user | 5 | wrong or replayed authenticator codes, at sign-in, enrolment confirmation, recovery-code regeneration and API-key step-up; a correct code resets |
+| `recovery_code` | user | 5 | wrong recovery codes at sign-in; a correct one resets |
+| `api_key_ip` | client address | 30 per 10 min | **invalid** keys only (unknown, revoked, expired); valid keys are never counted or refused |
+
+**Progressive blocks** last 1 min, then 2, 4, … up to 60 min; the level is forgotten after 24 h without a block. **No account is ever locked permanently.** The worst an attacker can impose on a victim is a rolling block of at most 60 minutes, and only while they keep spending attempts, each also counted against their own address. A legitimate user caught by it waits, or signs in once the block ends. **Unknown and existing accounts are counted identically**, so the responses (401s, then 429 with the same `Retry-After`) reveal nothing. Changing the case of an email or the source address doesn't escape the account counter. Changing the account doesn't escape the address counter.
+
+**Responses.** `429 {"error": {"code": "too_many_requests", "message": "Too many attempts. Try again later."}}` with `Retry-After` in seconds; no counters, identifiers or account hints. A refused attempt never reaches the password or code check, so even the right password gets 429 during a block. Requests that aren't throttled behave exactly as before.
+
+**Identifiers.** `subject_hash = HMAC-SHA256(DP_THROTTLE_KEYS[version], "datapilot/throttle/v1" ‖ scope ‖ identifier)`. The key is separate from the JWT, pepper and MFA keys. Emails are normalized exactly like sign-in does. Raw addresses, emails, keys and codes are never stored or logged, and neither are the HMACs. **Rotation:** add a new version to `DP_THROTTLE_KEYS` and make it active. A subject's row is re-keyed to the new version the first time it's touched, so counters and blocks carry over (tested). Keep the old version listed for at least one window and block period (an hour is enough with the defaults), then remove it. Removing it earlier gives subjects not yet touched a fresh allowance (tested; harmless but weaker). Required with `DP_ENV=prod`.
+
+**Failure policy: fail closed.** If the limiter can't reach its database, sign-in, enrolment and code checks answer **503** and the password or code is never checked. Throttling is never silently skipped. For the next 5 s (`DP_THROTTLE_FAILURE_COOLDOWN_SECONDS`) every check is refused immediately without contacting the database, so an outage doesn't turn the endpoint into a stream of connection attempts. One error is logged per outage, not per request. Invalid API keys stay 401 during an outage, and valid keys keep working (they never touch the limiter). An app without a limiter refuses sign-in the same way, and production refuses to start without one.
+
+**Audit (bounded).** One `login.throttled` or `api-key.throttled` event (metadata: `scope`, `retry_after_seconds`) when a subject *becomes* blocked, never one per refused request. Refused attempts write no `login.failed` or `api-key.rejected` event either. If the security audit writer fails, throttling is unaffected.
+
+**Readiness.** Production startup checks the actual limiter: it is configured, it covers every scope, its active key version is in the keyring, and `auth_throttle_buckets` exists with the runtime user's `SELECT/INSERT/UPDATE` (catalog queries at startup). There is no switch to turn protection off.
+
+**Housekeeping.** Rows are reused per subject, so the table grows with distinct subjects, not requests. The runtime user can't delete. Schedule `python -m app.cli purge-auth-throttle` (owner) daily: it deletes, in batches of 10 000, rows untouched for 24 h that aren't blocking.
+
+**Deliberately not done.** No global emergency limit: one attacker could use it to lock everyone out, and the per-address and per-account layers already bound the work per source. No Redis. No quotas for valid API keys. Invitation acceptance isn't throttled, because its tokens carry 256 random bits and can't be guessed.
 
 ## API keys
 
@@ -123,7 +153,7 @@ Each gap is a production blocker in `app/core/readiness.py`, derived from code (
 
 | Gap | Planned | Blocker |
 |---|---|---|
-| Sign-in throttling and rate limits for login and invalid API keys | 3B.3 | always, until implemented |
+| Quotas for *valid* API keys (request rate per key) | later | none: valid keys are not throttled by 3B.3 |
 | SSO | not scheduled | any active tenant with `enforce_sso = true`: the setting is stored but password sign-in still works, so it must not reach production silently |
 | MFA reset / authenticator replacement | later | none: users are locked out of MFA sign-in, not exposed |
 

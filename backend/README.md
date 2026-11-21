@@ -1,6 +1,6 @@
 # DataPilot API
 
-The FastAPI application backend from [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md). This is the skeleton: the structure, auth and permission model, and the product services the front end needs first. Storage is in memory, seeded with the same demo tenant the front end's mock data shows (Acme Global Corp, as of Fri Nov 20, 2026 14:32 UTC).
+The FastAPI application backend from [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md). It holds the structure, the auth and permission model, and the product services the front end needs first. Tenants, identity and authentication, API keys and the audit log are stored in PostgreSQL. Connect, Trust, Automate, Billing and Notifications are still in memory; Insights and Intelligence are contract-only (501). Both are seeded with the same demo tenant the front end's mock data shows (Acme Global Corp, as of Fri Nov 20, 2026 14:32 UTC).
 
 ## Run it
 
@@ -29,7 +29,7 @@ uv run uvicorn app.main:app --reload --port 8000
 - Liveness: `http://localhost:8000/healthz` (never touches the database)
 - **Two database users:** migrations run as the owner (`DP_MIGRATION_DATABASE_URL`), and the API connects as the least-privilege `datapilot_app` (`DP_DATABASE_URL`). That user owns nothing and has no DDL rights. See [docs/DATABASE.md](../docs/DATABASE.md#database-roles-stage-3a1).
 - **Upgrading a volume created before Stage 3A.1:** add `POSTGRES_APP_USER`, `POSTGRES_APP_PASSWORD` and the new URLs from `.env.example` to `.env`. Then run `docker compose up -d postgres` and `docker compose exec postgres /docker-entrypoint-initdb.d/02-create-app-role.sh` once, before `alembic upgrade head`.
-- **Production is blocked:** with `DP_ENV=prod` the API refuses to start until audit retention is enforced. See [Production blockers](../docs/DATABASE.md#production-blockers).
+- **Production is blocked:** with `DP_ENV=prod` the API refuses to start while audit retention isn't enforced or a tenant has `enforce_sso` set (SSO isn't implemented). It also refuses without a working abuse-protection limiter and a security audit writer. See [Production blockers](../docs/DATABASE.md#production-blockers).
 - Database readiness: `http://localhost:8000/healthz/db`, which returns `200 {"status":"ok","database":"ok","latency_ms":…}`, or `503` with `"database": "not_configured"` or `"unreachable"`
 - Security audit: `http://localhost:8000/healthz/security-audit`: `200` once a security event has been written and none failed since, `503 "unknown"` before the first write, `503 "degraded"` while the last write failed (counters only; see [docs/SECURITY.md](../docs/SECURITY.md#security-events-for-rejected-requests))
 
@@ -78,6 +78,14 @@ Read from `DP_*` environment variables, then the repo-root `.env` (shared with D
 | `DP_INVITATION_TTL_HOURS` | `24` | 1–72 |
 | `DP_MFA_ENCRYPTION_KEYS` / `DP_MFA_ENCRYPTION_KEY_VERSION` | none | `version=secret,…`: TOTP secrets are AES-256-GCM encrypted under a key derived from the active version. **Required in prod.** MFA endpoints answer 503 without them |
 | `DP_MFA_ISSUER` | `DataPilot` | The account issuer authenticator apps display |
+| `DP_THROTTLE_KEYS` / `DP_THROTTLE_KEY_VERSION` | none | `version=secret,…`: abuse-protection identifiers are HMACs under this key (separate from all other secrets). **Required in prod.** Without it, sign-in answers 503 |
+| `DP_THROTTLE_WINDOW_SECONDS` | `600` | Counting window for every scope |
+| `DP_THROTTLE_LOGIN_IP_LIMIT` | `20` | Sign-in attempts (any outcome) per client address per window |
+| `DP_THROTTLE_LOGIN_ACCOUNT_LIMIT` | `5` | Wrong passwords in a row per account before progressive blocks |
+| `DP_THROTTLE_MFA_LIMIT` / `DP_THROTTLE_RECOVERY_CODE_LIMIT` | `5` / `5` | Wrong codes per user before progressive blocks |
+| `DP_THROTTLE_API_KEY_IP_LIMIT` | `30` | Invalid API keys per client address per window |
+| `DP_THROTTLE_BLOCK_BASE_SECONDS` / `_MAX_SECONDS` / `DP_THROTTLE_BLOCK_MEMORY_HOURS` | `60` / `3600` / `24` | Progressive blocks: 1 min, doubling, at most 60 min; forgotten after 24 h without one |
+| `DP_THROTTLE_FAILURE_COOLDOWN_SECONDS` | `5` | After the limiter's database fails, refuse immediately for this long |
 | `DP_API_KEY_PEPPERS` / `DP_API_KEY_PEPPER_VERSION` | none | `version=secret,…` and the active version. **Required in prod.** Rotation: [docs/SECURITY.md](../docs/SECURITY.md#key-management) |
 
 ### Database and transactions
@@ -100,7 +108,7 @@ def create_thing(body: ThingIn, db: DbSession) -> ThingOut:
 - Connection failures and timeouts become `503 {"error": {"code": "service_unavailable", …}}`, with details logged but never returned.
 - Scripts and workers use `with database.session() as s: ...` for the same commit/rollback behaviour.
 
-**The Tenants module runs on PostgreSQL** (members, sessions, workspace settings, permission matrix), and so does request authentication. API keys, Connect, Trust, Automate, Billing, Notifications and the audit log are still in memory. IDs and responses are unchanged. Audit events are published only after the request's transaction commits. Schema, identifier mapping, request flow, tenant isolation and seed details are in [docs/DATABASE.md](../docs/DATABASE.md).
+**On PostgreSQL:** the Tenants module (members, sessions, workspace settings, permission matrix), API keys (since Stage 3B.1), the audit log (since Stage 3A.1, written in the request's transaction), authentication (passwords, sessions, refresh tokens, invitations, MFA) and abuse-protection counters. **Still in memory:** Connect, Trust, Automate, Billing and Notifications. IDs and responses are unchanged. Schema, identifier mapping, request flow, tenant isolation and seed details are in [docs/DATABASE.md](../docs/DATABASE.md).
 
 ### Demo data in PostgreSQL
 
@@ -191,7 +199,9 @@ curl -H 'Authorization: Bearer <access_token>' localhost:8000/api/v1/me
 
 `POST /auth/refresh` (refresh cookie + `X-CSRF-Token` + `Origin`) rotates the session; `POST /auth/logout` ends it.
 
-**MFA (Stage 3B.2).** `POST /auth/mfa/enrollment` (email + password) returns a TOTP secret and `otpauth://` URI; `POST /auth/mfa/enrollment/confirm` (email + password + code) turns MFA on and returns ten recovery codes. From then on sign-in needs `"mfa_code"` (or `"recovery_code"`) too, and creating an API key needs a fresh `mfa_code`. In dev, the demo tenant requires MFA, so a newly invited member enrols before their first sign-in. Tokens, cookies, CSRF, rotation, reuse detection and key rotation are described in [docs/SECURITY.md](../docs/SECURITY.md).
+**MFA (Stage 3B.2).** `POST /auth/mfa/enrollment` (email + password) returns a TOTP secret and `otpauth://` URI; `POST /auth/mfa/enrollment/confirm` (email + password + code) turns MFA on and returns ten recovery codes. From then on sign-in needs `"mfa_code"` (or `"recovery_code"`) too, and creating an API key needs a fresh `mfa_code`. In dev, the demo tenant requires MFA, so a newly invited member enrols before their first sign-in.
+
+**Abuse protection (Stage 3B.3).** Every password and code check is counted in PostgreSQL before it runs. Too many attempts get `429 Too Many Requests` with `Retry-After`. Schedule `uv run python -m app.cli purge-auth-throttle` daily (it runs as the owner) to delete stale counters. Details in [docs/SECURITY.md](../docs/SECURITY.md#abuse-protection-stage-3b3). Tokens, cookies, CSRF, rotation, reuse detection and key rotation are described in [docs/SECURITY.md](../docs/SECURITY.md).
 
 **API keys** (for non-browser clients) are created at `POST /api/v1/api-keys` (the secret is returned once; stored as a peppered HMAC in PostgreSQL) and sent as `Authorization: Bearer dp_live_…`. Keys are read-only and limited to their scopes (`trust:read`, `connect:read`, …). `intelligence:query` may also POST questions.
 
@@ -258,6 +268,6 @@ Approver job titles on workflows ("Finance Manager", "Operations Lead") are not 
 ## Next steps
 
 1. PostgreSQL repositories (SQLAlchemy + Alembic) behind the existing `Protocol`s, with tenant isolation.
-2. Stage 3B.3: sign-in throttling and rate limits (shared, atomic counters in PostgreSQL). Later: MFA reset by an operator.
+2. Later: SSO, audit-retention enforcement, MFA reset by an operator, and quotas for valid API keys (not part of 3B).
 3. Port Insights and Intelligence, then switch the front end's mock stores to this API module by module.
 4. Workers: ingestion (sync jobs), action execution and notification delivery, consuming the job queue.

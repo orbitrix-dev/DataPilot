@@ -1,14 +1,14 @@
-# Database schema (Stages 2A–3B.2)
+# Database schema (Stages 2A–3B.3)
 
 PostgreSQL 16+ (developed on 18), managed only by Alembic (`backend/migrations/`). ORM models live in `backend/app/modules/*/models.py` and must match the migrations; `uv run alembic check` and `tests/test_core_migration.py` enforce it.
 
-**Status (Stage 3B.2):**
-- **On PostgreSQL:** the Tenants module (tenants, members, sessions, workspace settings, permission matrix, **API keys**), the **audit log**, and **authentication** (passwords, refresh-token families, invitations, TOTP factors, recovery codes; see [SECURITY.md](SECURITY.md)). Request authentication resolves against it.
+**Status (Stage 3B.3):**
+- **On PostgreSQL:** the Tenants module (tenants, members, sessions, workspace settings, permission matrix, **API keys**), the **audit log**, **authentication** (passwords, refresh-token families, invitations, TOTP factors, recovery codes) and **abuse-protection counters** (see [SECURITY.md](SECURITY.md)). Request authentication resolves against it.
 - **Unchanged:** API contracts, readable IDs (`acme`, `u-elena`, `sess-1`) and error messages. The one exception is audit event `id`s, which are now UUIDv7 strings.
-- **Still in memory:** Connect, Trust, Automate, Billing and Notifications.
+- **Still in memory:** Connect, Trust, Automate, Billing and Notifications (Insights and Intelligence are contract-only and return 501).
 - **The application connects as a least-privilege runtime user**, `datapilot_app`. See [Database roles](#database-roles-stage-3a1).
 
-> **Production is blocked.** The API refuses to start with `DP_ENV=prod` until audit retention and sign-in abuse protection exist and no tenant has `enforce_sso` set. See [Production blockers](#production-blockers).
+> **Production is blocked.** The API refuses to start with `DP_ENV=prod` while audit retention isn't enforced or a tenant has `enforce_sso` set (SSO isn't implemented). See [Production blockers](#production-blockers).
 
 ## Entity relationships
 
@@ -121,6 +121,7 @@ erDiagram
 | `api_keys` (0005) | tenant | `UNIQUE (public_id)`; `UNIQUE (secret_hash)`, exactly 32 bytes (HMAC-SHA256); `pepper_version`; scopes non-empty and from the five API scopes; `UNIQUE (tenant_id, lower(name)) WHERE revoked_at IS NULL`; FK tenant `RESTRICT`; creator/revoker `SET NULL`; `expires_at > created_at` |
 | `refresh_tokens` (0005) | via session | `UNIQUE (token_hash)`, 32 bytes; FK session `CASCADE`; `parent_id` (the token it replaced) `SET NULL`; `UNIQUE (session_id) WHERE used_at IS NULL AND revoked_at IS NULL` (one live token per family); `expires_at > issued_at` |
 | `mfa_totp_factors` (0006) | via user | `UNIQUE (user_id)`, FK users `CASCADE`; `secret_ciphertext` ≥ 48 bytes (nonce + ciphertext + tag); `key_version`; `confirmed_at >= created_at`; `last_used_step` (replay prevention) |
+| `auth_throttle_buckets` (0007) | global | `UNIQUE (scope, subject_hash)`; scope list; `subject_hash` exactly 32 bytes (HMAC-SHA256, never a raw address, email or key); `key_version`; `attempt_count >= 0`; `block_level` 0–30; index on `updated_at` (purge) |
 | `mfa_recovery_codes` (0006) | via user | `UNIQUE (code_hash)`, 32 bytes; FK users `CASCADE`; never both used and revoked; index on `user_id` for unused codes |
 | `invitation_tokens` (0005) | tenant | `UNIQUE (token_hash)`, 32 bytes; FK `(tenant_id, user_id) → tenant_memberships` `CASCADE`; `UNIQUE (tenant_id, user_id) WHERE used_at IS NULL AND revoked_at IS NULL`; `expires_at > created_at` |
 
@@ -165,12 +166,12 @@ Exactly what Admin → Organization and Admin → Security edit through the exis
 ## Request context and the persistence boundary (Stage 2B)
 
 ```
-X-DataPilot-Tenant / X-DataPilot-User (dev only)  or  Bearer dp_live_… (API key, matched in memory)
+X-DataPilot-Tenant / X-DataPilot-User (dev only)  or  Bearer dp_live_… (API key: HMAC digest looked up in api_keys)  or  Bearer <access token>
   → tenant by slug:  unknown or deleted → 401 "Unknown tenant '<slug>'";  suspended → 403 "This workspace is suspended"
   → (dev headers) member by public id: only an active membership of an active user; else 401 "Unknown or inactive user"
   → TenantData for this request:
         tenants   = PostgreSQL adapters bound to (request DbSession, tenant UUID)   ← members, sessions, workspace, matrix
-        audit     = commit-gated buffer over the in-memory audit log
+        audit     = PostgresAuditRepository on the request's DbSession (since 3A.1: commits or rolls back with the change)
         the rest  = the in-memory registry entry for the slug (no entry → 401: fail closed)
   → tenants/service.py (unchanged apart from one line), through the same Table interface as before
 ```
@@ -227,6 +228,7 @@ The Admin → Permissions page speaks *levels* per capability. `app/modules/tena
 - `0001_core_schema` creates everything above and inserts the permission catalog. The catalog rows are a frozen copy in the migration, because migrations must not import app code; a test checks they match `permissions.py`.
 - `0005_identity_foundation` (Stage 3B.1) creates `api_keys`, `refresh_tokens` and `invitation_tokens` and grants the runtime user `SELECT, INSERT, UPDATE` on them (no `DELETE`: keys are revoked, tokens are marked used/revoked). **Rollback:** its downgrade drops the three tables, which deletes every API key (integrations stop authenticating), every refresh token (everyone is signed out at their next refresh) and every outstanding invitation. Sessions and passwords are in pre-existing tables and survive. Downgrade 0005 only together with the 3B.1 code.
 - `0006_mfa` (Stage 3B.2) creates `mfa_totp_factors` and `mfa_recovery_codes` (runtime user: `SELECT, INSERT, UPDATE`, no `DELETE`) and adds `user_sessions.mfa_verified_at`. **Rollback:** its downgrade drops both tables and the column: every enrolled authenticator and recovery code is lost, and with the 3B.1 code users sign in with a password only. Downgrade 0006 only together with the 3B.2 code.
+- `0007_auth_throttle` (Stage 3B.3) creates `auth_throttle_buckets`. The runtime user gets `SELECT, INSERT, UPDATE` and **no `DELETE`**: counters are reset in place, and stale rows are purged by the owner (`python -m app.cli purge-auth-throttle`, in batches). **Rollback:** its downgrade drops the table, so every counter and active block is lost (attackers start with a fresh allowance). Downgrade 0007 only together with the 3B.3 code.
 - Downgrade drops every table, which deletes all data. Use it in development and CI only.
 - Commands, transaction behaviour and the deployment rule are in [backend/README.md](../backend/README.md#migrations-alembic).
 
@@ -301,9 +303,9 @@ erDiagram
 | `durability` | `durable` / `transitional` | durable: the change and its event commit or roll back together. Transitional: see below |
 | `production_enabled` | true / false | production may perform the action. Memory-backed actions are always false |
 
-**PostgreSQL-backed actions (12 Tenants actions): atomic.** The event is written in the request's own transaction. A rollback or failed commit leaves neither the change nor the event.
+**PostgreSQL-backed actions (27, including API keys and the authentication and security events): atomic.** The event is written in the request's own transaction. A rollback or failed commit leaves neither the change nor the event.
 
-**Memory-backed actions (8): transitional. They are not atomic, and their business state is not durable.** They are `api-key.created` and `api-key.revoked` (keys are in memory until 3A.2), `workflow.approved`/`rejected`, `billing.plan_changed`/`plan_change_requested`, `connection.credential_rotated` and `settings.notifications_changed`. Each of them, tested:
+**Memory-backed actions (6): transitional. They are not atomic, and their business state is not durable.** They are `workflow.approved`/`rejected`, `billing.plan_changed`/`plan_change_requested`, `connection.credential_rotated` and `settings.notifications_changed`. Each of them, tested:
 1. **No phantom success events:** the event is written after the in-memory change succeeds, and stored only if the request commits.
 2. **Events can be missing:** if the request fails after the in-memory change, the change remains without its event.
 3. **The change isn't durable:** after a restart the in-memory change is gone; its event remains.
@@ -340,7 +342,7 @@ They work in development and testing. In production, recording them is refused, 
 
 ### Security events that must survive a failed request
 
-`SecurityAuditWriter` (`backend/app/modules/audit/security_writer.py`) writes events such as a rejected API key in an **independent transaction**, on its **own two-connection pool**, and commits immediately. It survives the request's rollback, and it never raises: failures are logged without the event's contents. It's built and tested, but **not wired into any request path yet.** Stage 3B connects it to rejected keys and failed sign-ins together with rate limiting, so unauthenticated floods can't fill the log.
+`SecurityAuditWriter` (`backend/app/modules/audit/security_writer.py`) writes events such as a rejected API key in an **independent transaction**, on its **own two-connection pool**, and commits immediately. It survives the request's rollback, and it never raises: failures are logged without the event's contents. Since Stage 3B.2 it records rejected sign-ins, rejected API keys and failed step-ups; since 3B.3 also the start of each throttling block. The rate limits bound how many of these one source can cause (see [SECURITY.md](SECURITY.md#security-events-for-rejected-requests)).
 
 ### Client addresses and IP data
 
@@ -420,7 +422,7 @@ The matrix above is the runtime user's complete **effective** access. Migration 
 `backend/app/core/readiness.py` runs at startup with `DP_ENV=prod` and refuses to start while any of these hold. Each is derived from the code itself; there's **no configuration switch** to bypass them:
 1. **Audit retention is not enforced** (`audit.retention.is_enforced()` is false).
 2. **An action is production-enabled while memory-backed or transitional.**
-3. **Sign-in abuse protection is not implemented** (`auth.enforcement.abuse_protection_enforced()`; Stage 3B.3).
+3. **Sign-in abuse protection is not active** (Stage 3B.3): the application has no limiter (`DP_THROTTLE_KEYS` missing), or the limiter reports a problem with its key, its scopes, the `auth_throttle_buckets` table or the runtime user's privileges on it, checked against the database at startup.
 4. **An active tenant requires MFA** while MFA is not implemented (`auth.enforcement.mfa_enforced()`). Inactive since Stage 3B.2 implemented MFA; the check stays as a guard.
-6. **No security audit writer** (rejected requests would go unrecorded).
 5. **An active tenant has `enforce_sso` set.** SSO is not implemented; the setting is stored but password sign-in still works, so it must not reach production silently.
+6. **No security audit writer**, or one without `health()` (rejected requests would go unrecorded, or failures unnoticed).
