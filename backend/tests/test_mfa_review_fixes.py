@@ -357,14 +357,85 @@ def test_authentication_answers_are_unchanged_when_the_writer_fails(pg_db, pg_co
         writer.dispose()
 
 
-def test_the_health_endpoint_reports_a_working_and_a_missing_writer(pg_db, migrated):
+def test_the_health_endpoint_reports_unknown_then_ok(migrated, owner_database):
+    """A new writer has proven nothing: 503 "unknown", never 200, until a write succeeds. (The app owns its database
+    here: the endpoint needs no seeded data, and the probe row is committed and removed afterwards.)"""
     writer = SecurityAuditWriter(TEST_DATABASE_URL)
     try:
-        ok = TestClient(create_app(_settings(), demo_registry(), database=pg_db, security_audit=writer))
-        r = ok.get("/healthz/security-audit")
+        http = TestClient(create_app(_settings(), demo_registry(), security_audit=writer))
+        r = http.get("/healthz/security-audit")
+        assert r.status_code == 503
+        assert r.json()["status"] == "unknown" and r.json()["state"] == "unknown" and r.json()["healthy"] is False
+        assert writer.record("login.failed", "endpoint health probe", metadata={"reason": "unknown_account"})
+        r = http.get("/healthz/security-audit")
         assert r.status_code == 200 and r.json()["status"] == "ok" and r.json()["events_failed"] == 0
     finally:
         writer.dispose()
+        _remove_global(owner_database, "endpoint health probe")
+
+
+def test_the_health_endpoint_reports_a_missing_writer(pg_db):
     missing = TestClient(create_app(_settings(), demo_registry(), database=pg_db))
     r = missing.get("/healthz/security-audit")
     assert r.status_code == 503 and r.json() == {"status": "unavailable", "security_audit": "not_configured"}
+
+
+# ---- health state transitions (regression: a new writer used to report healthy before writing anything)
+
+
+class _DatabaseDown:
+    """Stands in for the writer's session factory while the database is unreachable: every write fails exactly as a
+    connection error would, inside record()'s own error handling."""
+
+    def __call__(self):
+        raise ConnectionError("simulated: database unreachable")
+
+
+def _probe(writer: SecurityAuditWriter) -> bool:
+    return writer.record("login.failed", "state probe", metadata={"reason": "unknown_account"})
+
+
+@pytest.fixture
+def probe_writer(migrated, owner_database) -> Iterator[SecurityAuditWriter]:
+    writer = SecurityAuditWriter(TEST_DATABASE_URL)
+    yield writer
+    writer.dispose()
+    _remove_global(owner_database, "state probe")
+
+
+def test_a_new_writer_is_unknown_not_healthy(probe_writer):
+    health = probe_writer.health()
+    assert health["state"] == "unknown" and health["healthy"] is False
+    assert health["events_written"] == health["events_failed"] == health["consecutive_failures"] == 0
+    assert health["last_success_at"] is None and health["last_failure_at"] is None
+
+
+def test_the_first_successful_write_makes_it_healthy(probe_writer):
+    assert _probe(probe_writer) is True
+    health = probe_writer.health()
+    assert health["state"] == "healthy" and health["healthy"] is True and health["events_written"] == 1
+
+
+def test_a_failed_write_degrades_it_even_before_any_success(probe_writer, monkeypatch):
+    monkeypatch.setattr(probe_writer, "_sessions", _DatabaseDown())
+    assert _probe(probe_writer) is False
+    health = probe_writer.health()
+    assert health["state"] == "degraded" and health["healthy"] is False
+    assert health["events_failed"] == health["consecutive_failures"] == 1 and health["events_written"] == 0
+
+
+def test_consecutive_failures_stay_visible_and_a_success_restores_health(probe_writer, monkeypatch):
+    assert _probe(probe_writer) is True
+    real_sessions = probe_writer._sessions
+    monkeypatch.setattr(probe_writer, "_sessions", _DatabaseDown())
+    for expected in (1, 2, 3):
+        assert _probe(probe_writer) is False
+        health = probe_writer.health()
+        assert health["state"] == "degraded" and health["consecutive_failures"] == expected
+    assert health["events_written"] == 1 and health["events_failed"] == 3 and health["last_failure_at"] is not None
+    monkeypatch.setattr(probe_writer, "_sessions", real_sessions)  # the database is back
+    assert _probe(probe_writer) is True
+    health = probe_writer.health()
+    assert health["state"] == "healthy" and health["healthy"] is True and health["consecutive_failures"] == 0
+    assert health["events_written"] == 2 and health["events_failed"] == 3  # history is kept
+    assert health["last_success_at"] >= health["last_failure_at"]

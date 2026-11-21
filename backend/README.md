@@ -31,7 +31,7 @@ uv run uvicorn app.main:app --reload --port 8000
 - **Upgrading a volume created before Stage 3A.1:** add `POSTGRES_APP_USER`, `POSTGRES_APP_PASSWORD` and the new URLs from `.env.example` to `.env`. Then run `docker compose up -d postgres` and `docker compose exec postgres /docker-entrypoint-initdb.d/02-create-app-role.sh` once, before `alembic upgrade head`.
 - **Production is blocked:** with `DP_ENV=prod` the API refuses to start until audit retention is enforced. See [Production blockers](../docs/DATABASE.md#production-blockers).
 - Database readiness: `http://localhost:8000/healthz/db`, which returns `200 {"status":"ok","database":"ok","latency_ms":…}`, or `503` with `"database": "not_configured"` or `"unreachable"`
-- Security audit: `http://localhost:8000/healthz/security-audit`: `200` while rejected sign-ins and API keys are being recorded, `503 "degraded"` while the last write failed (counters only; see [docs/SECURITY.md](../docs/SECURITY.md#security-events-for-rejected-requests))
+- Security audit: `http://localhost:8000/healthz/security-audit`: `200` once a security event has been written and none failed since, `503 "unknown"` before the first write, `503 "degraded"` while the last write failed (counters only; see [docs/SECURITY.md](../docs/SECURITY.md#security-events-for-rejected-requests))
 
 Day to day: `docker compose up -d --wait postgres`, then the `uvicorn` line. `docker compose down` stops PostgreSQL and keeps the data; `docker compose down -v` **deletes all local database data**.
 

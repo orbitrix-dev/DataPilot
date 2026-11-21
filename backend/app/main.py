@@ -97,13 +97,17 @@ def create_app(
 
     @app.get("/healthz/security-audit", tags=["ops"])
     def healthz_security_audit() -> JSONResponse:
-        """Whether rejected sign-ins and API keys are being recorded. 503 when no writer is configured or its most
-        recent write failed (it recovers with the next successful write). Counters only, never event contents."""
+        """Whether rejected sign-ins and API keys are being recorded. 200 only when a write has succeeded and none
+        failed since; 503 "unknown" before the first write, 503 "degraded" while the most recent write failed (it
+        recovers with the next successful write), 503 when no writer is configured. Counters only, never event
+        contents, and no database access."""
         if writer is None:
             return JSONResponse({"status": "unavailable", "security_audit": "not_configured"}, status_code=503)
         health = writer.health()
-        ok = health["healthy"]
-        return JSONResponse({"status": "ok" if ok else "degraded", **health}, status_code=200 if ok else 503)
+        if health["healthy"]:
+            return JSONResponse({"status": "ok", **health}, status_code=200)
+        status = "unknown" if health.get("state") == "unknown" else "degraded"
+        return JSONResponse({"status": status, **health}, status_code=503)
 
     @app.get("/healthz/db", tags=["ops"])
     def healthz_db() -> JSONResponse:

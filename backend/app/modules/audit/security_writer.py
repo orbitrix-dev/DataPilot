@@ -10,9 +10,11 @@ Wired into request paths in Stage 3B.2 (``app/modules/auth/security_events.py``)
 
 **Failures are observable, never silent.** ``record`` returns False on failure, logs an ERROR (action code and
 exception class only), and updates bounded counters exposed by ``health()``: total writes and failures, consecutive
-failures, and when the last success and failure happened. ``GET /healthz/security-audit`` reports them and answers
-503 while the most recent write failed, so monitoring can alert on it. Nothing is queued or retried in memory: an
-event that failed to persist is lost, and the counters say so.
+failures, and when the last success and failure happened. ``health()["state"]`` is ``unknown`` until the first write
+(never having persisted anything proves nothing), ``degraded`` while the most recent write failed, and ``healthy``
+only after a successful write with no failure since. ``GET /healthz/security-audit`` answers 200 only when healthy,
+503 otherwise, so monitoring can alert on it. The health check itself never touches the database. Nothing is queued
+or retried in memory: an event that failed to persist is lost, and the counters say so.
 """
 
 import logging
@@ -109,10 +111,20 @@ class SecurityAuditWriter:
         return True
 
     def health(self) -> dict[str, Any]:
-        """Counters for monitoring. ``healthy`` is False while the most recent write failed."""
+        """Counters for monitoring, read under the lock so they are consistent with each other.
+
+        ``state``: ``degraded`` while the most recent write failed; ``unknown`` before any write (no evidence either
+        way); ``healthy`` once a write succeeded with no failure since. ``healthy`` is ``state == "healthy"``."""
         with self._lock:
+            if self._consecutive_failures > 0:
+                state = "degraded"
+            elif self._written == 0:
+                state = "unknown"
+            else:
+                state = "healthy"
             return {
-                "healthy": self._consecutive_failures == 0,
+                "healthy": state == "healthy",
+                "state": state,
                 "events_written": self._written,
                 "events_failed": self._failed,
                 "consecutive_failures": self._consecutive_failures,
