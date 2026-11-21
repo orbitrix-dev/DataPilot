@@ -67,6 +67,7 @@ export function ConnectionDetailsPage() {
       updateConnection(connection.id, {
         status: connection.status === 'failed' ? 'healthy' : connection.status,
         issue: undefined,
+        rotated: { time: NOW_ISO, by: 'Elena Vance', at: Date.now() },
       })
       closeRotate()
       toast('Credentials rotated and verified — read-only access confirmed')

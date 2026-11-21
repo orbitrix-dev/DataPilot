@@ -6,6 +6,7 @@ import { useClickOutside } from '../../lib/useClickOutside'
 import { cn } from '../../lib/cn'
 import { organizations } from './navigation'
 import type { Crumb } from './ShellContext'
+import { useAdminState } from '../../features/admin/store'
 
 type Menu = 'org' | 'notifications' | 'profile' | null
 
@@ -35,6 +36,9 @@ const notifications = [
 export function Topbar({ crumbs, onOpenMobileNav }: { crumbs: Crumb[]; onOpenMobileNav: () => void }) {
   const [menu, setMenu] = useState<Menu>(null)
   const [org, setOrg] = useState(organizations[0])
+  // The first organization is the one Admin settings edit; its name follows them.
+  const adminOrgName = useAdminState().org.name
+  const orgName = (o: (typeof organizations)[number]) => (o === organizations[0] ? adminOrgName : o.name)
   const [unread, setUnread] = useState(2)
   const toast = useToast()
   const navigate = useNavigate()
@@ -69,7 +73,7 @@ export function Topbar({ crumbs, onOpenMobileNav }: { crumbs: Crumb[]; onOpenMob
             <span className="w-5 h-5 rounded-sm bg-light-primary text-light-on-primary flex items-center justify-center font-label text-label-sm">
               {org.initials}
             </span>
-            <span className="font-label text-label-md text-light-on-surface hidden sm:inline">{org.name}</span>
+            <span className="font-label text-label-md text-light-on-surface hidden sm:inline">{orgName(org)}</span>
             <Icon name="expand_more" size={16} className="text-light-on-surface-variant" />
           </button>
           {menu === 'org' && (
@@ -84,14 +88,14 @@ export function Topbar({ crumbs, onOpenMobileNav }: { crumbs: Crumb[]; onOpenMob
                   onClick={() => {
                     setOrg(o)
                     close()
-                    toast(`Switched to ${o.name}`)
+                    toast(`Switched to ${orgName(o)}`)
                   }}
                   className={cn(
                     'w-full px-3 py-2 text-left flex items-center justify-between hover:bg-light-surface-container-low',
                     o.name === org.name && 'bg-light-primary-container/50',
                   )}
                 >
-                  <span className="font-label text-label-md text-light-on-surface">{o.name}</span>
+                  <span className="font-label text-label-md text-light-on-surface">{orgName(o)}</span>
                   {o.name === org.name && <Icon name="check" size={16} className="text-light-primary" />}
                 </button>
               ))}
@@ -198,12 +202,12 @@ export function Topbar({ crumbs, onOpenMobileNav }: { crumbs: Crumb[]; onOpenMob
             <div className="absolute right-0 mt-2 w-56 bg-light-surface border border-light-outline rounded-md shadow-lg py-1.5 z-50">
               <div className="px-3 py-2 border-b border-light-outline-variant">
                 <p className="font-label text-label-md text-light-on-surface">Elena Vance</p>
-                <p className="font-body text-body-sm text-light-on-surface-variant">Platform Admin · e.vance@acme.io</p>
+                <p className="font-body text-body-sm text-light-on-surface-variant">Administrator · e.vance@acme.io</p>
               </div>
               <Link to="/settings" onClick={close} className="block px-3 py-2 font-body text-body-md text-light-on-surface hover:bg-light-surface-container-low">
                 Profile &amp; preferences
               </Link>
-              <Link to="/audit-logs" onClick={close} className="block px-3 py-2 font-body text-body-md text-light-on-surface hover:bg-light-surface-container-low">
+              <Link to="/settings/api-keys" onClick={close} className="block px-3 py-2 font-body text-body-md text-light-on-surface hover:bg-light-surface-container-low">
                 API tokens
               </Link>
               <div className="border-t border-light-outline-variant my-1" />
