@@ -137,6 +137,8 @@ Each of these is something a built screen already depends on.
 | Connector Framework | `src/features/connect/store.ts` |
 | Quality, Metadata, Incidents (via Trust Query API) | `src/features/trust/store.ts` |
 
+Authentication (invitations, password sign-in, rotating refresh sessions, API keys) is implemented in the backend as of Stage 3B.1; see [SECURITY.md](SECURITY.md). The front end doesn't call it yet.
+
 The Command Center has no service of its own. It reads the other modules (`src/features/command-center/signals.ts`) and will read the same APIs.
 
 ## Open decisions

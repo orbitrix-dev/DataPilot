@@ -51,7 +51,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if settings.env == "prod":
-            assert_production_ready()  # refuses to start: see app/core/readiness.py
+            assert_production_ready(db)  # refuses to start: see app/core/readiness.py
         yield
         if owns_database and db is not None:
             db.dispose()

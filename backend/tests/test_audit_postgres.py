@@ -26,6 +26,7 @@ from app.modules.audit.models import AuditEventRecord
 from app.modules.audit.repository import AuditEntry, InMemoryAuditRepository, PostgresAuditRepository
 from app.modules.audit.sanitize import REDACTED, redact
 from app.modules.audit.security_writer import SecurityAuditWriter
+from app.modules.auth import enforcement
 from app.modules.identity.persistence import PostgresUserRepository
 from app.modules.tenants.persistence import (
     PostgresMembershipRepository,
@@ -322,6 +323,7 @@ def test_production_is_blocked_while_retention_is_not_enforced():
 
 def test_production_is_blocked_if_a_memory_backed_action_is_production_enabled(monkeypatch):
     monkeypatch.setattr(retention, "is_enforced", lambda: True)
+    monkeypatch.setattr(enforcement, "abuse_protection_enforced", lambda: True)
     good = [a for a in ACTIONS.values() if a.business_store == "postgres"]
     assert production_blockers(good) == []
     sneaky = AuditAction("billing.plan_changed", "Plan Changed", "memory", "transitional", True)
@@ -332,6 +334,7 @@ def test_production_is_blocked_if_a_memory_backed_action_is_production_enabled(m
 
 def test_the_real_registry_currently_passes_the_action_check(monkeypatch):
     monkeypatch.setattr(retention, "is_enforced", lambda: True)
+    monkeypatch.setattr(enforcement, "abuse_protection_enforced", lambda: True)
     assert production_blockers() == []
 
 
