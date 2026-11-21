@@ -46,7 +46,9 @@ class Database:
             connect_args={
                 "application_name": "datapilot-api",
                 "connect_timeout": connect_timeout,
-                "options": f"-c statement_timeout={statement_timeout_ms}",
+                # TimeZone=UTC: timestamps always come back as UTC, so API timestamps serialise identically
+                # whatever the server's default time zone is.
+                "options": f"-c statement_timeout={statement_timeout_ms} -c TimeZone=UTC",
             },
         )
         # expire_on_commit=False: objects stay readable after commit (the response is built after it).

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
@@ -21,9 +22,15 @@ class Principal:
 
 @dataclass(frozen=True)
 class RequestContext:
-    """Everything a service needs about the current request. Services never read globals."""
+    """Everything a service needs about the current request. Services never read globals.
+
+    ``tenant_id`` is the tenant's readable slug ("acme"): it's what the API, secret references and job messages
+    have always used. ``tenant_uuid`` is the internal database id, resolved during authentication; it's None only
+    for contexts built without a database (e.g. comparing against the in-memory implementation in tests).
+    """
 
     tenant_id: str
     principal: Principal
     data: TenantData
     ip: str
+    tenant_uuid: uuid.UUID | None = None

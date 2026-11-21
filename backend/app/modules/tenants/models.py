@@ -21,6 +21,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
     PrimaryKeyConstraint,
     String,
     Text,
@@ -28,13 +29,16 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import INET, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, Timestamps, UUIDPrimaryKey, check_in
+from app.db.types import IPAddress
 
 TENANT_STATUSES = ("active", "suspended", "deleted")
 MEMBERSHIP_STATUSES = ("invited", "active", "suspended")
+RETENTION_DAYS = (90, 365)
+SESSION_TIMEOUT_HOURS = (1, 8, 12, 24)
 SLUG_PATTERN = r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
 
 
@@ -48,6 +52,8 @@ class Tenant(UUIDPrimaryKey, Timestamps, Base):
     name: Mapped[str] = mapped_column(String(120))
     status: Mapped[str] = mapped_column(String(20), server_default="active")
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set by "Schedule deletion" (Admin → Organization). The workspace stays usable until then; status is unchanged.
+    deletion_scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         CheckConstraint(f"slug ~ '{SLUG_PATTERN}'", name="slug_format"),
@@ -128,6 +134,9 @@ class TenantMembership(UUIDPrimaryKey, Timestamps, Base):
     title: Mapped[str] = mapped_column(String(120), server_default="")
     # NULL while invited; set when the user joins.
     joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Last activity in this tenant, shown in Admin → Users ("Last active", IP). NULL until the member is active.
+    last_active_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_active_ip: Mapped[IPAddress | None] = mapped_column(INET)
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "user_id"),
@@ -137,4 +146,37 @@ class TenantMembership(UUIDPrimaryKey, Timestamps, Base):
         CheckConstraint("(membership_status = 'invited') = (joined_at IS NULL)", name="joined_at_matches_status"),
         Index(None, "user_id"),
         Index(None, "tenant_id", "role_id"),
+    )
+
+
+class TenantSettings(Timestamps, Base):
+    """Per-tenant settings edited in Admin → Organization and Admin → Security (one row per tenant).
+
+    Only what the existing API and Admin pages expose. The tenant's display name is ``tenants.name``.
+    ``industry`` and ``timezone`` are validated against the API's allowed values (Pydantic); the database only
+    requires them to be non-blank, so offering a new value doesn't need a migration.
+    """
+
+    __tablename__ = "tenant_settings"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="RESTRICT"), primary_key=True
+    )
+    industry: Mapped[str] = mapped_column(String(80))
+    timezone: Mapped[str] = mapped_column(String(64), server_default="UTC")
+    audit_retention_days: Mapped[int] = mapped_column(Integer, server_default="365")
+    require_mfa: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    enforce_sso: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    session_timeout_hours: Mapped[int] = mapped_column(Integer, server_default="12")
+
+    __table_args__ = (
+        CheckConstraint("length(btrim(industry)) > 0", name="industry_not_blank"),
+        CheckConstraint("length(btrim(timezone)) > 0", name="timezone_not_blank"),
+        CheckConstraint(
+            f"audit_retention_days IN ({', '.join(map(str, RETENTION_DAYS))})", name="audit_retention_days_valid"
+        ),
+        CheckConstraint(
+            f"session_timeout_hours IN ({', '.join(map(str, SESSION_TIMEOUT_HOURS))})",
+            name="session_timeout_hours_valid",
+        ),
     )

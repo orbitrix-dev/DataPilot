@@ -16,6 +16,7 @@ import re
 import uuid
 from datetime import datetime
 from typing import Protocol
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,9 +26,10 @@ from app.core.errors import Conflict, NotFound
 from app.db.integrity import translate_integrity_errors
 from app.modules.tenants.models import TenantMembership
 
-from .models import EMAIL_PATTERN, USER_STATUSES, IPAddress, User, UserSession
+from .models import EMAIL_PATTERN, PUBLIC_ID_PATTERN, USER_STATUSES, IPAddress, User, UserSession
 
 _EMAIL = re.compile(EMAIL_PATTERN)
+_PUBLIC_ID = re.compile(PUBLIC_ID_PATTERN)
 TOKEN_DIGEST_BYTES = 32
 
 
@@ -39,6 +41,17 @@ def normalize_email(email: str) -> str:
     return normalized
 
 
+def new_member_public_id() -> str:
+    """The member id format the API has always issued for invitations ("u-" + 10 hex)."""
+    return f"u-{uuid4().hex[:10]}"
+
+
+def check_public_id(value: str) -> str:
+    if not _PUBLIC_ID.match(value):
+        raise ValueError(f"Invalid public id {value!r}")
+    return value
+
+
 def parse_ip(value: str | None) -> IPAddress | None:
     """Validates an IP for the INET column. Raises ValueError for anything that isn't an IP address."""
     return None if value is None else ipaddress.ip_address(value)
@@ -48,8 +61,9 @@ def parse_ip(value: str | None) -> IPAddress | None:
 
 
 class UserRepository(Protocol):
-    def create(self, email: str, full_name: str, *, status: str = "active") -> User: ...
+    def create(self, email: str, full_name: str, *, status: str = "active", public_id: str | None = None) -> User: ...
     def get(self, user_id: uuid.UUID) -> User: ...
+    def find_by_public_id(self, public_id: str) -> User | None: ...
     def find_by_email(self, email: str) -> User | None: ...
 
 
@@ -66,6 +80,7 @@ class SessionRepository(Protocol):
         ip: str | None = None,
         location: str | None = None,
         user_agent: str | None = None,
+        public_id: str | None = None,
     ) -> UserSession: ...
     def get(self, session_id: uuid.UUID) -> UserSession: ...
     def list_active(self) -> list[UserSession]: ...
@@ -79,13 +94,23 @@ class PostgresUserRepository:
     def __init__(self, session: Session) -> None:
         self._s = session
 
-    def create(self, email: str, full_name: str, *, status: str = "active") -> User:
+    def create(self, email: str, full_name: str, *, status: str = "active", public_id: str | None = None) -> User:
         if status not in USER_STATUSES:
             raise ValueError(f"Invalid user status {status!r}")
-        user = User(email=normalize_email(email), full_name=full_name.strip(), status=status)
-        with translate_integrity_errors(self._s, unique=lambda: Conflict("A user with this email already exists")):
+        user = User(
+            public_id=check_public_id(public_id or new_member_public_id()),
+            email=normalize_email(email),
+            full_name=full_name.strip(),
+            status=status,
+        )
+        with translate_integrity_errors(
+            self._s, unique=lambda: Conflict("A user with this email or id already exists")
+        ):
             self._s.add(user)
         return user
+
+    def find_by_public_id(self, public_id: str) -> User | None:
+        return self._s.scalar(select(User).where(User.public_id == public_id))
 
     def get(self, user_id: uuid.UUID) -> User:
         user = self._s.get(User, user_id)
@@ -116,6 +141,7 @@ class PostgresSessionRepository:
         ip: str | None = None,
         location: str | None = None,
         user_agent: str | None = None,
+        public_id: str | None = None,
     ) -> UserSession:
         if len(token_hash) != TOKEN_DIGEST_BYTES:
             raise ValueError("token_hash must be a 32-byte digest, never a raw token")
@@ -129,6 +155,7 @@ class PostgresSessionRepository:
         if membership.membership_status != "active":
             raise Conflict("Only active members can have sessions")
         session = UserSession(
+            public_id=check_public_id(public_id or f"sess-{uuid4().hex[:12]}"),
             tenant_id=self.tenant_id,
             user_id=user_id,
             token_hash=token_hash,

@@ -8,12 +8,14 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy.orm import Session
+from sqlalchemy.engine import Connection
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import BACKEND_DIR, Settings
 from app.core.db import Database
 from app.main import create_app
 from app.seed import demo_registry
+from app.seed_postgres import seed_demo
 
 
 class _TestEnv(BaseSettings):
@@ -88,15 +90,52 @@ def db_session(migrated) -> Iterator[Session]:
         conn.close()
 
 
+class BoundDatabase(Database):
+    """A ``Database`` whose sessions run inside one test connection's transaction.
+
+    Request transactions become savepoints: the app commits and rolls back exactly as in production (commit hooks
+    such as audit publishing included), and everything is discarded when the test's outer transaction rolls back.
+    """
+
+    def __init__(self, base: Database, connection: Connection) -> None:
+        self.engine = base.engine  # ping() only
+        self._sessions = sessionmaker(bind=connection, join_transaction_mode="create_savepoint", expire_on_commit=False)
+
+    def dispose(self) -> None:
+        pass  # the connection belongs to the test fixture
+
+
+@pytest.fixture
+def pg_conn(migrated) -> Iterator[Connection]:
+    """A connection in an outer transaction with the demo tenant seeded; rolled back after the test."""
+    conn = migrated.engine.connect()
+    outer = conn.begin()
+    with Session(bind=conn, join_transaction_mode="create_savepoint") as s:
+        seed_demo(s)
+        s.commit()
+    try:
+        yield conn
+    finally:
+        outer.rollback()
+        conn.close()
+
+
+@pytest.fixture
+def pg_db(migrated, pg_conn) -> BoundDatabase:
+    return BoundDatabase(migrated, pg_conn)
+
+
 @pytest.fixture
 def registry():
+    """In-memory data for the modules not yet in PostgreSQL (Connect, Trust, Automate, Billing, API keys, audit)."""
     return demo_registry()
 
 
 @pytest.fixture
-def client(registry) -> TestClient:
-    """A fresh app and demo tenant per test. Requests act as Elena Vance (Administrator) unless `as_user` is passed."""
-    return TestClient(create_app(Settings(env="test"), registry), base_url="http://testserver/api/v1")
+def client(registry, pg_db) -> TestClient:
+    """A fresh app per test: Tenants in PostgreSQL (demo seeded), other modules in memory. Requests act as Elena Vance
+    (Administrator) unless `as_user` is passed."""
+    return TestClient(create_app(Settings(env="test"), registry, database=pg_db), base_url="http://testserver/api/v1")
 
 
 def as_user(user_id: str) -> dict[str, str]:

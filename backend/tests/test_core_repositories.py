@@ -224,6 +224,7 @@ def test_only_active_members_can_have_sessions_and_expired_ones_are_not_listed(d
     now = datetime.now(UTC)
     db_session.add(  # an already-expired session, inserted directly (the repository only creates future expiries)
         UserSession(
+            public_id="sess-expired",
             tenant_id=acme.id,
             user_id=active.id,
             token_hash=digest(),

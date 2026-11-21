@@ -1,4 +1,4 @@
-"""Migration 0001: builds the core schema from an empty database, reverses cleanly and matches the models."""
+"""Migrations 0001-0002: build the core schema from an empty database, reverses cleanly and matches the models."""
 
 from alembic import command
 from alembic.autogenerate import compare_metadata
@@ -18,6 +18,7 @@ CORE_TABLES = {
     "role_permissions",
     "tenant_memberships",
     "user_sessions",
+    "tenant_settings",
 }
 
 
@@ -32,7 +33,7 @@ def revision(db) -> str | None:
 
 def test_upgrade_from_an_empty_database_builds_the_core_schema(migrated):
     # `migrated` ran `downgrade base` then `upgrade head` at the start of the session.
-    assert revision(migrated) == "0001"
+    assert revision(migrated) == "0002"
     assert tables(migrated) == CORE_TABLES
 
 
@@ -50,7 +51,7 @@ def test_downgrade_removes_everything_and_re_upgrade_restores_it(migrated):
         assert tables(migrated) == set()
     finally:
         command.upgrade(cfg, "head")
-    assert revision(migrated) == "0001"
+    assert revision(migrated) == "0002"
     assert tables(migrated) == CORE_TABLES
     with migrated.engine.connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM permissions")).scalar_one() == len(CATALOG)
@@ -85,3 +86,48 @@ def test_expected_constraints_and_indexes_exist(migrated):
     session_columns = {c["name"]: c for c in insp.get_columns("user_sessions")}
     assert type(session_columns["ip"]["type"]).__name__ == "INET"
     assert all(session_columns[c]["nullable"] for c in ("device", "ip", "location", "user_agent"))
+
+
+def test_0002_backfills_existing_0001_data_and_its_downgrade_preserves_it(migrated):
+    """Rows created at 0001 (before public ids and settings existed) get the known demo id or a derived one and
+    default settings; downgrading 0002 removes only its additions."""
+    cfg = alembic_config()
+    tenant_id, other_id = "01900000-0000-7000-8000-000000000001", "01900000-0000-7000-8000-0000000000aa"
+    try:
+        command.downgrade(cfg, "0001")
+        with migrated.session() as s:
+            s.execute(
+                text("INSERT INTO tenants (id, slug, name) VALUES (:id, 'legacy', 'Legacy Co')"), {"id": tenant_id}
+            )
+            s.execute(
+                text(
+                    "INSERT INTO users (id, email, full_name) VALUES"
+                    " (gen_random_uuid(), 'e.vance@acme.io', 'Elena Vance'), (:other, 'someone@legacy.io', 'Someone')"
+                ),
+                {"other": other_id},
+            )
+        command.upgrade(cfg, "head")
+        with migrated.session() as s:
+            ids = dict(s.execute(text("SELECT email, public_id FROM users")).all())
+            assert ids == {"e.vance@acme.io": "u-elena", "someone@legacy.io": "u-" + other_id.replace("-", "")}
+            settings = s.execute(text("SELECT * FROM tenant_settings WHERE tenant_id = :t"), {"t": tenant_id}).one()
+            assert (settings.industry, settings.timezone, settings.audit_retention_days) == (
+                "Wholesale & Distribution",
+                "UTC",
+                365,
+            )
+            assert (settings.require_mfa, settings.enforce_sso, settings.session_timeout_hours) == (False, False, 12)
+        command.downgrade(cfg, "0001")
+        with migrated.session() as s:
+            assert s.execute(text("SELECT count(*) FROM users")).scalar_one() == 2
+            assert (
+                s.execute(text("SELECT name FROM tenants WHERE id = :t"), {"t": tenant_id}).scalar_one() == "Legacy Co"
+            )
+    finally:
+        with migrated.session() as s:
+            if s.execute(text("SELECT to_regclass('tenant_settings')")).scalar_one() is not None:
+                s.execute(text("DELETE FROM tenant_settings"))
+            s.execute(text("DELETE FROM users"))
+            s.execute(text("DELETE FROM tenants"))
+        command.upgrade(cfg, "head")
+    assert revision(migrated) == "0002"

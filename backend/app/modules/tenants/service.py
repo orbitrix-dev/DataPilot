@@ -89,7 +89,8 @@ def invite(ctx: RequestContext, body: InviteIn) -> Member:
         status="invited",
         mfa="pending",
     )
-    repo.members.put(member)
+    # The stored member: an existing user (e.g. a member of another tenant) keeps their own id.
+    member = repo.members.put(member)
     audit.record(ctx, "user", "User Invited", f"Invited {body.email} as {ROLE_LABEL[body.role]}", f"member:{member.id}")
     return member
 

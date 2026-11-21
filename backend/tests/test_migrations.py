@@ -1,6 +1,6 @@
 """Alembic infrastructure: the real migrations/env.py, exercised with temporary migration scripts.
 
-Each test writes throwaway revisions to a temp directory, chained on top of the repository's real head (0001),
+Each test writes throwaway revisions to a temp directory, chained on top of the repository's real head,
 and points Alembic at both locations. Everything else (env.py, URL resolution, the single transaction,
 lock_timeout, offline SQL, metadata comparison) is the real configuration. The schema migration itself is
 tested in test_core_migration.py.
@@ -35,7 +35,7 @@ def table() -> str:
     return f"mig_probe_{uuid4().hex[:8]}"
 
 
-HEAD = "0001"
+HEAD = "0002"
 
 
 @pytest.fixture

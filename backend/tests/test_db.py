@@ -58,6 +58,7 @@ def test_statement_timeout_is_enforced_by_the_server(database):
     try:
         with db.engine.connect() as conn:
             assert conn.execute(text("SHOW statement_timeout")).scalar_one() == "150ms"
+            assert conn.execute(text("SHOW TimeZone")).scalar_one() == "UTC"
             with pytest.raises(Exception, match="statement timeout"):
                 conn.execute(text("SELECT pg_sleep(2)"))
     finally:

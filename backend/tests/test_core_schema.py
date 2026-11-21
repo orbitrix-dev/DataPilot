@@ -54,7 +54,7 @@ def test_unique_constraints(db_session):
         db_session.add(Tenant(slug="acme", name="Another"))
     u = user(db_session, "e.vance@acme.io")
     with rejects(db_session, "uq_users_email"):
-        db_session.add(User(email="e.vance@acme.io", full_name="Duplicate"))
+        db_session.add(User(public_id="u-direct-1", email="e.vance@acme.io", full_name="Duplicate"))
     with rejects(db_session, "uq_roles_tenant_id_key"):
         db_session.add(Role(tenant_id=a.id, key="analyst", name="Second analyst"))
     member(db_session, a, u)
@@ -90,19 +90,19 @@ def test_soft_deletion_requires_both_status_and_timestamp(db_session):
 
 def test_emails_must_be_normalized(db_session):
     with rejects(db_session, "ck_users_email_normalized"):
-        db_session.add(User(email="E.Vance@acme.io", full_name="X"))
+        db_session.add(User(public_id="u-direct-2", email="E.Vance@acme.io", full_name="X"))
     with rejects(db_session, "ck_users_email_(normalized|format)"):  # whitespace breaks both; either may fire first
-        db_session.add(User(email=" e.vance@acme.io", full_name="X"))
+        db_session.add(User(public_id="u-direct-3", email=" e.vance@acme.io", full_name="X"))
     with rejects(db_session, "ck_users_email_format"):
-        db_session.add(User(email="not-an-email", full_name="X"))
+        db_session.add(User(public_id="u-direct-4", email="not-an-email", full_name="X"))
 
 
 def test_plaintext_passwords_cannot_be_stored(db_session):
     with rejects(db_session, "password_hash_is_argon2id"):
-        db_session.add(User(email="a@acme.io", full_name="A", password_hash="hunter2"))
+        db_session.add(User(public_id="u-direct-5", email="a@acme.io", full_name="A", password_hash="hunter2"))
     with rejects(db_session, "password_hash_is_argon2id"):
-        db_session.add(User(email="b@acme.io", full_name="B", password_hash="$2b$12$bcrypt"))
-    db_session.add(User(email="c@acme.io", full_name="C", password_hash=ARGON2))
+        db_session.add(User(public_id="u-direct-6", email="b@acme.io", full_name="B", password_hash="$2b$12$bcrypt"))
+    db_session.add(User(public_id="u-direct-7", email="c@acme.io", full_name="C", password_hash=ARGON2))
     db_session.flush()
 
 
@@ -132,13 +132,35 @@ def test_session_token_column_only_accepts_digests_and_ip_must_be_an_address(db_
     u = user(db_session, "e.vance@acme.io")
     member(db_session, a, u)
     with rejects(db_session, "token_hash_is_digest"):
-        db_session.add(UserSession(tenant_id=a.id, user_id=u.id, token_hash=b"raw-session-token", expires_at=SOON))
+        db_session.add(
+            UserSession(
+                public_id="sess-direct-1",
+                tenant_id=a.id,
+                user_id=u.id,
+                token_hash=b"raw-session-token",
+                expires_at=SOON,
+            )
+        )
     with rejects(db_session, "invalid input syntax for type inet", DBAPIError):
-        db_session.add(UserSession(tenant_id=a.id, user_id=u.id, token_hash=digest(), expires_at=SOON, ip="testclient"))
+        db_session.add(
+            UserSession(
+                public_id="sess-direct-2",
+                tenant_id=a.id,
+                user_id=u.id,
+                token_hash=digest(),
+                expires_at=SOON,
+                ip="testclient",
+            )
+        )
     with rejects(db_session, "revocation_has_reason"):
         db_session.add(
             UserSession(
-                tenant_id=a.id, user_id=u.id, token_hash=digest(), expires_at=SOON, revoked_at=datetime.now(UTC)
+                public_id="sess-direct-3",
+                tenant_id=a.id,
+                user_id=u.id,
+                token_hash=digest(),
+                expires_at=SOON,
+                revoked_at=datetime.now(UTC),
             )
         )
 
@@ -164,7 +186,9 @@ def test_delete_rules(db_session):
     a = tenant(db_session, "acme")
     u = user(db_session, "e.vance@acme.io")
     m = member(db_session, a, u, "analyst")
-    db_session.add(UserSession(tenant_id=a.id, user_id=u.id, token_hash=digest(), expires_at=SOON))
+    db_session.add(
+        UserSession(public_id="sess-direct-4", tenant_id=a.id, user_id=u.id, token_hash=digest(), expires_at=SOON)
+    )
     db_session.flush()
     analyst = role(db_session, a, "analyst")
     # RESTRICT: a tenant with data, a user with memberships, an assigned role.
@@ -213,7 +237,11 @@ def test_a_session_cannot_exist_for_a_tenant_the_user_is_not_a_member_of(db_sess
     u = user(db_session, "e.vance@acme.io")
     member(db_session, acme, u)
     with rejects(db_session, "fk_user_sessions_tenant_id_user_id_tenant_memberships"):
-        db_session.add(UserSession(tenant_id=globex.id, user_id=u.id, token_hash=digest(), expires_at=SOON))
+        db_session.add(
+            UserSession(
+                public_id="sess-direct-5", tenant_id=globex.id, user_id=u.id, token_hash=digest(), expires_at=SOON
+            )
+        )
 
 
 def test_raw_sql_cannot_move_a_membership_to_another_tenants_role(db_session):
