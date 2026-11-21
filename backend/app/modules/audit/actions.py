@@ -102,6 +102,7 @@ _ACTIONS = (
     _a("login.blocked", "Login Blocked", *_PG, reason="str"),
     _a("api-key.rejected", "API Key Rejected", *_PG, reason="str"),
     _a("api-key.step_up_failed", "Step-up Verification Failed", *_PG, reason="str"),
+    _a("user.recovery_codes_step_up_failed", "Recovery Code Regeneration Refused", *_PG, reason="str"),
 )
 
 ACTIONS: MappingProxyType = MappingProxyType({a.code: a for a in _ACTIONS})

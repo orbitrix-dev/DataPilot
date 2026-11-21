@@ -95,6 +95,16 @@ def create_app(
         """Liveness: the process is up. Doesn't touch the database."""
         return {"status": "ok", "env": settings.env}
 
+    @app.get("/healthz/security-audit", tags=["ops"])
+    def healthz_security_audit() -> JSONResponse:
+        """Whether rejected sign-ins and API keys are being recorded. 503 when no writer is configured or its most
+        recent write failed (it recovers with the next successful write). Counters only, never event contents."""
+        if writer is None:
+            return JSONResponse({"status": "unavailable", "security_audit": "not_configured"}, status_code=503)
+        health = writer.health()
+        ok = health["healthy"]
+        return JSONResponse({"status": "ok" if ok else "degraded", **health}, status_code=200 if ok else 503)
+
     @app.get("/healthz/db", tags=["ops"])
     def healthz_db() -> JSONResponse:
         """Readiness of PostgreSQL. 503 when unconfigured or unreachable; error details go to the log only."""

@@ -132,7 +132,13 @@ def test_every_registered_action_is_used_by_a_call_site_the_demo_history_or_the_
 
 
 # Recorded through SecurityAuditWriter (rejected requests). Each must be named in the code that records it.
-SECURITY_WRITER_ACTIONS = {"login.failed", "login.blocked", "api-key.rejected", "api-key.step_up_failed"}
+SECURITY_WRITER_ACTIONS = {
+    "login.failed",
+    "login.blocked",
+    "api-key.rejected",
+    "api-key.step_up_failed",
+    "user.recovery_codes_step_up_failed",
+}
 
 
 def test_security_writer_actions_are_registered_and_used():

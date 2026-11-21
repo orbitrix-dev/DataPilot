@@ -200,6 +200,9 @@ class RecordingSecurityAudit:
     def actions(self) -> list[str]:
         return [e["action"] for e in self.events]
 
+    def health(self) -> dict:
+        return {"healthy": True, "events_written": len(self.events), "events_failed": 0}
+
 
 @pytest.fixture
 def security_audit() -> RecordingSecurityAudit:

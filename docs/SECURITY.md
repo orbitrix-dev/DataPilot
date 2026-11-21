@@ -74,7 +74,8 @@ Both are refused (`409`) once a factor is confirmed: a stolen password alone can
 **Verification** (`app/modules/auth/mfa.py`):
 - a code is accepted only if it equals the TOTP of the decrypted secret for the current step or one step either side. A six-digit string is never accepted for its format (tested with `000000`, `123456` and neighbouring codes);
 - **no replay**: each factor stores the last accepted step and a code must be for a *later* step, enforced by one conditional `UPDATE … RETURNING` (two concurrent uses of one code: exactly one succeeds, tested). A side effect: at most one successful verification per user per 30 seconds;
-- a recovery code is consumed by one conditional UPDATE and reported with the number left (`login.recovery_code_used`). `POST /auth/mfa/recovery-codes {code}` with the access token and a fresh TOTP issues a new set and revokes the old one.
+- a recovery code is consumed by one conditional UPDATE and reported with the number left (`login.recovery_code_used`). `POST /auth/mfa/recovery-codes {code}` with the access token and a fresh TOTP issues a new set and revokes the old one;
+- generating a set (enrolment confirmation, regeneration) first locks the user's row with `SELECT … FOR UPDATE`, so concurrent requests for one user are serialized and can never leave two active sets; the TOTP check, revocation and insertion share one transaction, so a failure leaves the previous set usable (concurrency-tested on PostgreSQL).
 
 **`require_mfa`** (Admin → Security) is enforced in two places: sign-in refuses a member without a factor (`403 mfa_enrollment_required`, recorded as `login.blocked`), and **every request** refuses a session whose sign-in didn't verify MFA, so turning the setting on ends password-only sessions immediately. Sessions that did verify MFA keep working, across refresh-token rotation.
 
@@ -90,12 +91,15 @@ A rejected request rolls its transaction back, so its audit event would vanish w
 
 | Action | When | Reasons |
 |---|---|---|
-| `login.failed` | sign-in or enrolment re-authentication refused | `unknown_account`, `no_password`, `wrong_password`, `account_disabled`, `no_active_membership`, `mfa_invalid`, `recovery_code_invalid` |
+| `login.failed` | sign-in or enrolment re-authentication refused | `unknown_account`, `no_password`, `wrong_password`, `account_disabled`, `no_active_membership`, `mfa_required` (right password, no code sent), `mfa_invalid`, `recovery_code_invalid` |
 | `login.blocked` | right credentials, but sign-in isn't allowed | `tenant_suspended`, `mfa_enrollment_required` |
 | `api-key.rejected` | unknown, revoked or expired API key | `invalid_key` (the key id and tenant when the key exists) |
 | `api-key.step_up_failed` | key creation refused | `step_up_invalid`, `step_up_not_enrolled` |
+| `user.recovery_codes_step_up_failed` | recovery-code regeneration refused (403 wrong/reused code, 409 MFA not enabled) | `recovery_code_regeneration_step_up_failed`, `recovery_code_regeneration_not_enrolled` |
 
-Events carry the reason, the account and tenant when known, and the client address. They never carry the password, code, token or key presented, nor the email typed for an account that doesn't exist (it's attacker-controlled and is sometimes a mistyped password). Events for unknown accounts and keys have no tenant (global). Until 3B.3 adds rate limiting, a flood writes one row per attempt; that is one reason production stays blocked. Production also refuses to start without a writer.
+Events carry the reason, the account and tenant when known, and the client address. They never carry the password, code, token or key presented, nor the email typed for an account that doesn't exist (it's attacker-controlled and is sometimes a mistyped password). Events for unknown accounts and keys have no tenant (global). Until 3B.3 adds rate limiting, a flood writes one row per attempt; that is one reason production stays blocked. Production also refuses to start without a writer, or with one that exposes no `health()`.
+
+**Write failures are observable.** A write that fails never breaks the request, but it isn't silent either: the writer logs an ERROR (action code and exception class only), the caller logs a WARNING (`Security event NOT persisted: action=… reason=…`), and bounded counters (events written/failed, consecutive failures, last success/failure time) are served by `GET /healthz/security-audit`, which answers **503 `degraded`** while the most recent write failed (and 503 `not_configured` without a writer). Point monitoring at it. Nothing is queued in memory: an event that failed is lost, and the counters say so. Startup doesn't probe the writer; the endpoint is the runtime signal.
 
 ## API keys
 

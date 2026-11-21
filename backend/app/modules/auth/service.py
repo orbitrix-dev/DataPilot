@@ -347,6 +347,7 @@ def login(
     factor = mfa.factor_for(db, user)
     if factor is not None:
         if not mfa_code and not recovery_code:
+            on_failure("login.failed", "mfa_required", user, tenant.id)  # the password was right; no code sent
             raise mfa.MfaRequired("Enter the code from your authenticator app")
         second = mfa.verify_second_factor(db, settings, user, factor, code=mfa_code, recovery_code=recovery_code)
         if second is None:

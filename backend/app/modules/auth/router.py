@@ -37,7 +37,7 @@ from .schemas import (
     PasswordReauthIn,
     RecoveryCodesOut,
 )
-from .security_events import login_failure_hook
+from .security_events import login_failure_hook, record_rejection, writer_for
 
 REFRESH_COOKIE = "__Host-dp_refresh"
 CSRF_COOKIE = "__Host-dp_csrf"
@@ -206,5 +206,19 @@ def regenerate_recovery_codes(
     authenticated = service.authenticate_access_token(
         db, settings, authorization.removeprefix("Bearer "), client=client
     )
-    codes = mfa.regenerate_recovery_codes(db, settings, authenticated.user, body.code, client=client)
+    try:
+        codes = mfa.regenerate_recovery_codes(db, settings, authenticated.user, body.code, client=client)
+    except (mfa.StepUpFailed, mfa.MfaNotEnabled) as exc:
+        # The request rolls back (the previous set stays valid); the refusal is recorded independently.
+        record_rejection(
+            writer_for(request),
+            "user.recovery_codes_step_up_failed",
+            "recovery_code_regeneration_step_up_failed"
+            if isinstance(exc, mfa.StepUpFailed)
+            else "recovery_code_regeneration_not_enrolled",
+            client=client,
+            user=authenticated.user,
+            tenant_id=authenticated.tenant.id,
+        )
+        raise
     return RecoveryCodesOut(recovery_codes=codes)

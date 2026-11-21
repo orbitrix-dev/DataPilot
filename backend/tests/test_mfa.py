@@ -235,10 +235,10 @@ def test_sign_in_requires_the_second_factor_once_enrolled(web, pg_conn):
     totp, _ = enrolled(pg_conn, web)
     r = web.login()
     assert r.status_code == 401 and r.json()["error"]["code"] == "mfa_required"
-    assert web.audit.events == []  # step one of the flow, not a failure
+    assert [e["metadata"] for e in web.audit.events] == [{"reason": "mfa_required"}]  # recorded (review finding 2)
     r = web.login(mfa_code=wrong(totp.now()))
     assert r.status_code == 401 and r.json()["error"]["code"] == "mfa_invalid"
-    assert web.audit.actions() == ["login.failed"] and web.audit.events[0]["metadata"] == {"reason": "mfa_invalid"}
+    assert web.audit.actions() == ["login.failed"] * 2 and web.audit.events[1]["metadata"] == {"reason": "mfa_invalid"}
     r = web.login(mfa_code=totp.now())
     assert r.status_code == 200
     sid = jwt.decode(r.json()["access_token"], options={"verify_signature": False})["sid"]

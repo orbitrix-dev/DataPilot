@@ -13,7 +13,7 @@ from app.modules.auth import enforcement
 from app.modules.tenants.models import Tenant, TenantSettings
 from app.seed import demo_registry
 
-from .conftest import TEST_DATABASE_URL
+from .conftest import TEST_DATABASE_URL, RecordingSecurityAudit
 
 
 def db(conn) -> Session:
@@ -64,7 +64,9 @@ def test_production_needs_a_security_audit_writer(pg_db, monkeypatch):
         s.commit()
     with pytest.raises(ProductionNotReady, match="No security audit writer"):
         assert_production_ready(pg_db, None)
-    assert_production_ready(pg_db, object())  # nothing else blocks once every control is in place
+    with pytest.raises(ProductionNotReady, match="exposes no health"):
+        assert_production_ready(pg_db, object())  # a writer whose failures can't be observed doesn't count
+    assert_production_ready(pg_db, RecordingSecurityAudit())  # nothing else blocks once every control is in place
 
 
 def test_dev_and_test_are_not_blocked(pg_db):

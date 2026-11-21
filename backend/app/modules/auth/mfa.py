@@ -10,7 +10,10 @@ Security properties (each covered by tests):
 - **Encrypted at rest.** The secret is stored only as AES-256-GCM ciphertext bound to the user and key version
   (``core/security.py``). Secrets under an older key version are re-encrypted with the active one when used.
 - **Recovery codes** (ten, ~79 bits each) are stored as SHA-256 digests and consumed with one conditional UPDATE.
-  Generating a new set revokes every unused code of the old set.
+  Generating a new set revokes every unused code of the old set. Generation (enrolment confirmation, regeneration)
+  first locks the user's row (``SELECT … FOR UPDATE``), so concurrent requests for one user run one after the other
+  and can never leave two active sets; the step-up check, revocation and insertion share the caller's transaction, so
+  a failure leaves the previous set intact.
 - **Enrolment can't replace a factor.** Starting or confirming enrolment is refused once a factor is confirmed, so a
   stolen password alone can't swap in an attacker's authenticator.
 """
@@ -66,6 +69,10 @@ class MfaEnrollmentRequired(Forbidden):
 
 class StepUpFailed(Forbidden):
     code = "mfa_invalid"
+
+
+class MfaNotEnabled(Conflict):
+    """Same response as before (409 conflict); a distinct type so the refusal can be recorded."""
 
 
 def mfa_keyring(settings: Settings) -> Keyring:
@@ -158,7 +165,16 @@ def _unused_codes(db: Session, user: User) -> list[MfaRecoveryCode]:
     )
 
 
+def lock_user(db: Session, user: User) -> User:
+    """Serializes per-user MFA changes: a concurrent caller waits here until this transaction ends, then reads the
+    committed state (READ COMMITTED re-reads after the wait)."""
+    return db.execute(
+        select(User).where(User.id == user.id).with_for_update().execution_options(populate_existing=True)
+    ).scalar_one()
+
+
 def _new_recovery_codes(db: Session, user: User) -> list[str]:
+    """Revokes the unused codes and inserts a new set. Callers hold the user's row lock (``lock_user``)."""
     now = clock.now()
     db.execute(
         update(MfaRecoveryCode)
@@ -249,6 +265,7 @@ def _audit_everywhere(
 
 def confirm_enrollment(db: Session, settings: Settings, user: User, code: str, *, client: str = "") -> list[str]:
     """Proves the authenticator works, enables MFA and returns ten recovery codes (shown once)."""
+    user = lock_user(db, user)
     factor = factor_for(db, user, confirmed=False)
     if factor is None:
         raise Conflict("Start MFA enrolment first")
@@ -265,9 +282,13 @@ def confirm_enrollment(db: Session, settings: Settings, user: User, code: str, *
 
 
 def regenerate_recovery_codes(db: Session, settings: Settings, user: User, code: str, *, client: str = "") -> list[str]:
+    """Replaces the set after a fresh TOTP check, all under the user's row lock and in the caller's transaction."""
+    user = lock_user(db, user)
     factor = factor_for(db, user)
+    if factor is not None:
+        db.refresh(factor)  # the state committed by whoever held the lock before us
     if factor is None:
-        raise Conflict("MFA is not enabled for this account")
+        raise MfaNotEnabled("MFA is not enabled for this account")
     if not verify_totp(db, settings, user, factor, code):
         raise StepUpFailed("Invalid verification code")
     codes = _new_recovery_codes(db, user)

@@ -6,12 +6,19 @@ transaction** on its **own small connection pool** (so it can't deadlock waiting
 holds) and commits immediately. It never raises: if the database is unavailable the failure is logged (without
 the event's contents) and the caller's response is unaffected.
 
-Built and tested in Stage 3A.1 but deliberately **not wired into any request path**: Stage 3B connects it to
-rejected API keys and failed sign-ins, together with rate limiting, so unauthenticated floods can't fill the log.
+Wired into request paths in Stage 3B.2 (``app/modules/auth/security_events.py``).
+
+**Failures are observable, never silent.** ``record`` returns False on failure, logs an ERROR (action code and
+exception class only), and updates bounded counters exposed by ``health()``: total writes and failures, consecutive
+failures, and when the last success and failure happened. ``GET /healthz/security-audit`` reports them and answers
+503 while the most recent write failed, so monitoring can alert on it. Nothing is queued or retried in memory: an
+event that failed to persist is lost, and the counters say so.
 """
 
 import logging
+import threading
 import uuid
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import create_engine
@@ -43,6 +50,12 @@ class SecurityAuditWriter:
             },
         )
         self._sessions = sessionmaker(self._engine, expire_on_commit=False)
+        self._lock = threading.Lock()  # requests run in a thread pool
+        self._written = 0
+        self._failed = 0
+        self._consecutive_failures = 0
+        self._last_success_at: datetime | None = None
+        self._last_failure_at: datetime | None = None
 
     def record(
         self,
@@ -77,9 +90,35 @@ class SecurityAuditWriter:
             with self._sessions() as session, session.begin():
                 session.add(to_record(entry, tenant_id))
         except Exception as exc:  # noqa: BLE001 - security logging must never break the caller
-            log.error("Could not write security audit event %s (%s)", definition.code, type(exc).__name__)
+            with self._lock:
+                self._failed += 1
+                self._consecutive_failures += 1
+                self._last_failure_at = clock.now()
+                consecutive = self._consecutive_failures
+            log.error(
+                "Could not write security audit event %s (%s); consecutive failures: %d",
+                definition.code,
+                type(exc).__name__,
+                consecutive,
+            )
             return False
+        with self._lock:
+            self._written += 1
+            self._consecutive_failures = 0
+            self._last_success_at = clock.now()
         return True
+
+    def health(self) -> dict[str, Any]:
+        """Counters for monitoring. ``healthy`` is False while the most recent write failed."""
+        with self._lock:
+            return {
+                "healthy": self._consecutive_failures == 0,
+                "events_written": self._written,
+                "events_failed": self._failed,
+                "consecutive_failures": self._consecutive_failures,
+                "last_success_at": self._last_success_at.isoformat() if self._last_success_at else None,
+                "last_failure_at": self._last_failure_at.isoformat() if self._last_failure_at else None,
+            }
 
     def dispose(self) -> None:
         self._engine.dispose()

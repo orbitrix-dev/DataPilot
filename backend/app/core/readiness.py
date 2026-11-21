@@ -65,6 +65,8 @@ def assert_production_ready(database: Database | None, security_audit: object | 
     blockers = production_blockers()
     if security_audit is None:
         blockers.append("No security audit writer: rejected sign-ins and API keys would not be recorded")
+    elif not callable(getattr(security_audit, "health", None)):
+        blockers.append("The security audit writer exposes no health(): its write failures would not be observable")
     if database is None:
         blockers.append("No database configured")
     else:
