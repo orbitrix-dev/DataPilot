@@ -200,7 +200,8 @@ export type Action = { type: ActionTypeId | ''; target: string; approver: Approv
 
 export type WorkflowState = 'draft' | 'published' | 'paused'
 
-export type AuditEntry = { text: string; actor: string; time: string }
+/** `at` is set on entries created during the session (ms since epoch), for cross-module ordering. */
+export type AuditEntry = { text: string; actor: string; time: string; at?: number }
 
 export type Workflow = {
   id: string
@@ -496,6 +497,8 @@ export type Run = {
   steps: Step[]
   /** Delivery retries used, for failed runs. */
   retriesUsed?: number
+  /** When the run was created or last changed in this session (ms since epoch). */
+  at?: number
 }
 
 export const seedRuns: Run[] = [

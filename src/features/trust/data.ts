@@ -26,7 +26,8 @@ export type Incident = {
   businessCause: string
   resolution: { text: string; code?: string; after?: string }
   evidence: string[]
-  history: { time: string; text: string }[]
+  /** `at` is set on entries added during the session (ms since epoch). */
+  history: { time: string; text: string; at?: number }[]
   rcaSubtitle: string
   causalChain: CauseStep[]
 }
@@ -263,6 +264,8 @@ export type FreshnessRow = {
   status: FreshnessStatus
   /** Connect connection that feeds the dataset, for breached SLAs. */
   connectionId?: string
+  /** When the dataset was refreshed in this session (ms since epoch). */
+  refreshedAt?: number
 }
 
 export const freshness: FreshnessRow[] = [

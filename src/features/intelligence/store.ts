@@ -10,6 +10,8 @@ type IntelligenceState = {
   history: HistoryEntry[]
   /** SKUs that have a PO draft pending approval. */
   poDrafts: string[]
+  /** When the current PO draft was created (ms since epoch). */
+  poDraftAt?: number
   /** Answer most recently asked, used by the home page's evidence shortcut. */
   lastAnswerId?: string
 }
@@ -41,15 +43,15 @@ export function recordQuestion(entry: Omit<HistoryEntry, 'id' | 'asked'>) {
   seq += 1
   setState({
     ...state,
-    history: [{ ...entry, id: `s${seq}`, asked: nowLabel() }, ...state.history],
+    history: [{ ...entry, id: `s${seq}`, asked: nowLabel(), at: Date.now() }, ...state.history],
     lastAnswerId: entry.answerId ?? state.lastAnswerId,
   })
 }
 
 export function createPoDraft(skus: string[]) {
-  setState({ ...state, poDrafts: Array.from(new Set([...state.poDrafts, ...skus])) })
+  setState({ ...state, poDrafts: Array.from(new Set([...state.poDrafts, ...skus])), poDraftAt: Date.now() })
 }
 
 export function discardPoDraft() {
-  setState({ ...state, poDrafts: [] })
+  setState({ ...state, poDrafts: [], poDraftAt: undefined })
 }

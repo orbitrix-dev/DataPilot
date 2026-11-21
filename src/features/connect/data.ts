@@ -307,6 +307,8 @@ export type SyncRun = {
   durationSeconds: number
   timestamp: string
   trigger: 'Scheduled' | 'Manual'
+  /** Set on runs recorded during the session (ms since epoch). */
+  at?: number
 }
 
 export const syncRuns: SyncRun[] = [

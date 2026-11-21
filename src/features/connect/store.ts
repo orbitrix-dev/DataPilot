@@ -49,7 +49,7 @@ export function removeConnection(id: string) {
 let runSeq = 98422
 export function recordRun(run: Omit<SyncRun, 'id'>): SyncRun {
   runSeq += 1
-  const full: SyncRun = { ...run, id: `sync_${runSeq}` }
+  const full: SyncRun = { ...run, id: `sync_${runSeq}`, at: Date.now() }
   setState({ ...state, runs: [full, ...state.runs] })
   return full
 }

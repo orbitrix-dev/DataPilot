@@ -396,6 +396,8 @@ export type HistoryEntry = {
   /** Trust issue that qualified the answer at query time. */
   qualifiedBy?: string
   asked: string
+  /** Set on questions asked during the session (ms since epoch). */
+  at?: number
 }
 
 export const seedHistory: HistoryEntry[] = [
