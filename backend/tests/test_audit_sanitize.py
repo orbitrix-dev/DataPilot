@@ -24,6 +24,8 @@ from app.modules.audit.sanitize import REDACTED, redact
 from app.modules.audit.security_writer import SecurityAuditWriter
 from app.seed import demo_tenant
 
+from .conftest import mfa_code
+
 BASE = "http://testserver/api/v1"
 
 
@@ -121,7 +123,9 @@ def test_real_call_sites_store_redacted_summaries_and_metadata(client, pg_conn):
     assert JWT[:40] not in _row_text(row) and REDACTED in row.summary and REDACTED in row.event_metadata["to_value"]
     assert row.summary.startswith("Organization name: Acme Global Corp → Acme ")  # context kept
 
-    key = client.post("/api-keys", json={"name": "password=hunter2", "scopes": ["trust:read"], "mfa_code": "123456"})
+    key = client.post(
+        "/api-keys", json={"name": "password=hunter2", "scopes": ["trust:read"], "mfa_code": mfa_code(client)}
+    )
     assert key.status_code == 201
     row = _stored(pg_conn, action="api-key.created")
     assert "hunter2" not in _row_text(row)

@@ -1,9 +1,11 @@
 import pytest
 
+from .conftest import mfa_code
+
 
 @pytest.fixture
 def trust_key(client) -> dict[str, str]:
-    r = client.post("/api-keys", json={"name": "Reader", "scopes": ["trust:read"], "mfa_code": "000000"})
+    r = client.post("/api-keys", json={"name": "Reader", "scopes": ["trust:read"], "mfa_code": mfa_code(client)})
     return {"Authorization": f"Bearer {r.json()['secret']}"}
 
 

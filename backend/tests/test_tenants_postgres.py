@@ -40,7 +40,7 @@ from app.seed import _members, demo_registry, demo_tenant
 from app.seed_postgres import seed_demo
 from app.tenant_data import Registry
 
-from .conftest import as_user, audit_events
+from .conftest import as_user, audit_events, mfa_code
 from .factories import DEMO_MATRIX, SOON, digest, remove_demo
 
 BASE = "http://testserver/api/v1"
@@ -247,7 +247,7 @@ def test_suspended_tenant_is_refused_before_membership_is_checked(client, pg_con
 
 
 def test_suspended_tenant_also_refuses_api_keys(client, pg_conn):
-    created = client.post("/api-keys", json={"name": "Reader", "scopes": ["trust:read"], "mfa_code": "123456"})
+    created = client.post("/api-keys", json={"name": "Reader", "scopes": ["trust:read"], "mfa_code": mfa_code(client)})
     key = {"Authorization": f"Bearer {created.json()['secret']}"}
     assert client.get("/trust/incidents", headers=key).status_code == 200
     _set_tenant_status(pg_conn, "suspended")

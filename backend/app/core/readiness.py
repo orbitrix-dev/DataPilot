@@ -61,8 +61,10 @@ class ProductionNotReady(RuntimeError):
     pass
 
 
-def assert_production_ready(database: Database | None) -> None:
+def assert_production_ready(database: Database | None, security_audit: object | None = None) -> None:
     blockers = production_blockers()
+    if security_audit is None:
+        blockers.append("No security audit writer: rejected sign-ins and API keys would not be recorded")
     if database is None:
         blockers.append("No database configured")
     else:

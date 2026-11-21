@@ -11,6 +11,10 @@ Security properties (each covered by tests):
   parameters change.
 - **Sessions** are rows in ``user_sessions``; every access token names its session, and every request re-checks the
   session (not revoked, not expired, not idle beyond the tenant's timeout), the membership and the tenant.
+- **MFA** (Stage 3B.2): a user with a confirmed TOTP factor must send a valid ``mfa_code`` (or ``recovery_code``)
+  with the password; a tenant with ``require_mfa`` refuses members without a factor, and refuses (on every request)
+  sessions whose sign-in didn't verify one. Rejected sign-ins are reported through ``on_failure`` so the caller can
+  record them in an independent transaction (they'd otherwise roll back with the request).
 - **Refresh tokens** rotate on every use. A token that was already used or revoked is replay: the whole family (the
   session and all its tokens) is revoked and a ``login.refresh_reuse_detected`` event is recorded. Rotation locks the
   token row, and at most one live token per session is allowed, so concurrent refreshes can't fork a family.
@@ -20,6 +24,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -47,6 +52,8 @@ from app.modules.audit.service import record_event
 from app.modules.identity.models import InvitationToken, RefreshToken, User, UserSession
 from app.modules.identity.persistence import new_member_public_id, normalize_email, parse_ip
 from app.modules.tenants.models import Role, Tenant, TenantMembership, TenantSettings
+
+from . import mfa
 
 INVITATION_PREFIX = "dpi_"
 REFRESH_PREFIX = "dpr_"
@@ -278,6 +285,37 @@ def _active_memberships(db: Session, user: User) -> list[tuple[TenantMembership,
     return [(m, t) for m, t in rows]
 
 
+# Called with (action, reason, user or None, tenant id or None) just before a sign-in is refused. The attempted email
+# of an unknown account is deliberately not passed: it is attacker-controlled and is sometimes a mistyped password.
+FailureHook = Callable[[str, str, "User | None", "uuid.UUID | None"], None]
+
+
+def _ignore_failure(action: str, reason: str, user: User | None, tenant_id: uuid.UUID | None) -> None:
+    pass
+
+
+def authenticate_password(db: Session, *, email: str, password: str, on_failure: FailureHook = _ignore_failure) -> User:
+    """The user whose password this is, or the uniform 401. Spends one Argon2 verification in every case."""
+    try:
+        normalized = normalize_email(email)
+    except ValueError:
+        normalized = None
+    user = db.scalar(select(User).where(User.email == normalized)) if normalized else None
+    password_ok = verify_password(user.password_hash if user else None, password)
+    if user is None or not password_ok or user.status != "active":
+        if user is None:
+            reason = "unknown_account"
+        elif user.password_hash is None:
+            reason = "no_password"
+        elif not password_ok:
+            reason = "wrong_password"
+        else:
+            reason = "account_disabled"
+        on_failure("login.failed", reason, user, None)
+        raise Unauthorized(INVALID_CREDENTIALS)
+    return user
+
+
 def login(
     db: Session,
     settings: Settings,
@@ -287,25 +325,36 @@ def login(
     tenant_slug: str | None,
     client: str,
     user_agent: str,
+    mfa_code: str | None = None,
+    recovery_code: str | None = None,
+    on_failure: FailureHook = _ignore_failure,
 ) -> IssuedSession:
     jwt_keyring(settings)  # fail before any work if signing isn't configured
-    try:
-        normalized = normalize_email(email)
-    except ValueError:
-        normalized = None
-    user = db.scalar(select(User).where(User.email == normalized)) if normalized else None
-    if not verify_password(user.password_hash if user else None, password) or user is None or user.status != "active":
-        raise Unauthorized(INVALID_CREDENTIALS)
+    user = authenticate_password(db, email=email, password=password, on_failure=on_failure)
     memberships = _active_memberships(db, user)
     if tenant_slug is not None:
         memberships = [(m, t) for m, t in memberships if t.slug == tenant_slug]
     if not memberships:
+        on_failure("login.failed", "no_active_membership", user, None)
         raise Unauthorized(INVALID_CREDENTIALS)
     if len(memberships) > 1:
         raise Conflict("Choose a workspace to sign in to", tenants=[t.slug for _, t in memberships])
     membership, tenant = memberships[0]
     if tenant.status == "suspended":
+        on_failure("login.blocked", "tenant_suspended", user, tenant.id)
         raise Forbidden("This workspace is suspended")
+    second = None
+    factor = mfa.factor_for(db, user)
+    if factor is not None:
+        if not mfa_code and not recovery_code:
+            raise mfa.MfaRequired("Enter the code from your authenticator app")
+        second = mfa.verify_second_factor(db, settings, user, factor, code=mfa_code, recovery_code=recovery_code)
+        if second is None:
+            on_failure("login.failed", "mfa_invalid" if mfa_code else "recovery_code_invalid", user, tenant.id)
+            raise mfa.InvalidMfaCode("Invalid verification code")
+    elif _tenant_requires_mfa(db, tenant.id):
+        on_failure("login.blocked", "mfa_enrollment_required", user, tenant.id)
+        raise mfa.MfaEnrollmentRequired("This workspace requires multi-factor authentication. Enable it, then sign in.")
     if password_needs_rehash(user.password_hash):
         user.password_hash = hash_password(password)
     now = clock.now()
@@ -322,6 +371,7 @@ def login(
         device=describe_device(user_agent),
         ip=_ip_or_none(client),
         user_agent=user_agent[:512] or None,
+        mfa_verified_at=now if second is not None else None,
     )
     db.add(session)
     db.flush()
@@ -329,33 +379,57 @@ def login(
     membership.last_active_at = now
     membership.last_active_ip = _ip_or_none(client)
     db.flush()
+    method = "password" if second is None else f"password+{second.method}"
+    via = {"password": "a password", "password+totp": "a password and an authenticator code"}.get(
+        method, "a password and a recovery code"
+    )
     record_event(
         PostgresAuditRepository(db, tenant.id),
         "login.succeeded",
-        f"Signed in with a password{f' · {session.device}' if session.device else ''}",
+        f"Signed in with {via}{f' · {session.device}' if session.device else ''}",
         actor_type="user",
         actor_id=user.public_id,
         actor_label=user.full_name,
         client=client,
-        metadata={"method": "password"},
+        metadata={"method": method},
         environment=settings.env,
     )
+    if second is not None and second.method == "recovery_code":
+        record_event(
+            PostgresAuditRepository(db, tenant.id),
+            "login.recovery_code_used",
+            f"Used a recovery code to sign in ({second.recovery_codes_left} left)",
+            actor_type="user",
+            actor_id=user.public_id,
+            actor_label=user.full_name,
+            client=client,
+            metadata={"remaining": second.recovery_codes_left},
+            environment=settings.env,
+        )
     access, access_expires = _issue_access(settings, user, tenant, session)
     return IssuedSession(access, access_expires, refresh, expires, tenant.slug, user.public_id)
 
 
+def _tenant_requires_mfa(db: Session, tenant_id: uuid.UUID) -> bool:
+    return bool(db.scalar(select(TenantSettings.require_mfa).where(TenantSettings.tenant_id == tenant_id)))
+
+
 def _session_problem(db: Session, session: UserSession, now: datetime) -> str | None:
-    """Why ``session`` can't be used (None if it can): revoked, expired, idle too long, or its membership, user or
-    tenant is no longer active."""
+    """Why ``session`` can't be used (None if it can): revoked, expired, idle too long, signed in without MFA in a
+    tenant that requires it, or its membership, user or tenant is no longer active."""
     if session.revoked_at is not None:
         return "revoked"
     if session.expires_at <= now:
         return "expired"
-    timeout_hours = db.scalar(
-        select(TenantSettings.session_timeout_hours).where(TenantSettings.tenant_id == session.tenant_id)
-    )
-    if timeout_hours is not None and session.last_seen_at + timedelta(hours=timeout_hours) <= now:
+    policy = db.execute(
+        select(TenantSettings.session_timeout_hours, TenantSettings.require_mfa).where(
+            TenantSettings.tenant_id == session.tenant_id
+        )
+    ).first()
+    if policy is not None and session.last_seen_at + timedelta(hours=policy.session_timeout_hours) <= now:
         return "idle timeout"
+    if policy is not None and policy.require_mfa and session.mfa_verified_at is None:
+        return "mfa required"
     row = db.execute(
         select(TenantMembership.membership_status, User.status, Tenant.status)
         .join(User, User.id == TenantMembership.user_id)

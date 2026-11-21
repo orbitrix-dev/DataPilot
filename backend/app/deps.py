@@ -23,6 +23,7 @@ Client address: ``app/core/client_address.py`` (X-Forwarded-For only from ``DP_T
 Authorization follows the tenant's live permission matrix (Admin → Permissions).
 """
 
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import timedelta
 from typing import Annotated
@@ -38,6 +39,7 @@ from app.core.db import DbSession
 from app.core.errors import Forbidden, ServiceUnavailable, Unauthorized
 from app.core.security import Keyring, api_key_digest
 from app.modules.audit.repository import PostgresAuditRepository
+from app.modules.auth import security_events
 from app.modules.auth import service as auth_service
 from app.modules.tenants import service as tenants
 from app.modules.tenants.models import ApiKey, Tenant
@@ -87,20 +89,27 @@ def _api_key_keyring(settings: Settings) -> Keyring | None:
         return None
 
 
-def _authenticate_api_key(db: Session, keyring: Keyring, secret: str) -> tuple[ApiKey, Tenant]:
+def _authenticate_api_key(
+    db: Session, keyring: Keyring, secret: str, on_reject: Callable[[ApiKey | None, Tenant | None], None]
+) -> tuple[ApiKey, Tenant]:
     """Indexed lookup by digest under every configured pepper version. The digest must match the version recorded on
-    the key. Revoked, expired and unknown keys are indistinguishable to the caller."""
+    the key. Revoked, expired and unknown keys are indistinguishable to the caller. ``on_reject`` is called (with the
+    key and tenant when known) before refusing, so the rejection can be recorded outside the request transaction."""
     digests = {api_key_digest(secret, pepper): version for version, pepper in keyring.keys.items()}
     row = db.execute(
         select(ApiKey, Tenant).join(Tenant, Tenant.id == ApiKey.tenant_id).where(ApiKey.secret_hash.in_(digests))
     ).first()
     if row is None:
+        on_reject(None, None)
         raise Unauthorized(INVALID_API_KEY)
     key, tenant = row
     now = clock.now()
-    if digests[key.secret_hash] != key.pepper_version or key.revoked_at is not None:
-        raise Unauthorized(INVALID_API_KEY)
-    if key.expires_at is not None and key.expires_at <= now:
+    if (
+        digests[key.secret_hash] != key.pepper_version
+        or key.revoked_at is not None
+        or (key.expires_at is not None and key.expires_at <= now)
+    ):
+        on_reject(key, tenant)
         raise Unauthorized(INVALID_API_KEY)
     _check_tenant(tenant, tenant.slug)
     if key.pepper_version != keyring.active:  # pepper rotation: re-hash under the active version while we have it
@@ -130,8 +139,22 @@ def get_ctx(
     if authorization and authorization.startswith("Bearer dp_live_"):
         if keyring is None:
             raise ServiceUnavailable("API keys are not configured")
-        # Stage 3B.2 records rejected keys with SecurityAuditWriter (an independent transaction); 3B.3 rate-limits them.
-        key, tenant = _authenticate_api_key(db, keyring, authorization.removeprefix("Bearer "))
+        # Rejected keys are recorded by SecurityAuditWriter (an independent transaction); 3B.3 rate-limits them.
+        writer = security_events.writer_for(request)
+
+        def on_reject(key: ApiKey | None, tenant: Tenant | None) -> None:
+            security_events.record_rejection(
+                writer,
+                "api-key.rejected",
+                "invalid_key",
+                client=ip,
+                actor_type="api_key",
+                actor_id=key.public_id if key is not None else None,
+                actor_label=f"API key {key.name}" if key is not None else None,
+                tenant_id=tenant.id if tenant is not None else None,
+            )
+
+        key, tenant = _authenticate_api_key(db, keyring, authorization.removeprefix("Bearer "), on_reject)
         principal = Principal(
             kind="api_key", id=key.public_id, name=f"API key {key.name}", scopes=frozenset(key.scopes)
         )

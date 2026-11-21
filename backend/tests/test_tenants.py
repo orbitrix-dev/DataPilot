@@ -1,4 +1,4 @@
-from .conftest import as_user, audit_events
+from .conftest import as_user, audit_events, mfa_code
 
 
 def test_seed_matches_the_admin_ui(client):
@@ -74,7 +74,9 @@ def test_matrix_save_validates_and_logs_each_change(client):
 
 def test_api_key_secret_is_shown_once(client):
     assert client.post("/api-keys", json={"name": "X", "scopes": ["trust:read"], "mfa_code": "12"}).status_code == 422
-    r = client.post("/api-keys", json={"name": "Warehouse Sync", "scopes": ["trust:read"], "mfa_code": "123456"})
+    r = client.post(
+        "/api-keys", json={"name": "Warehouse Sync", "scopes": ["trust:read"], "mfa_code": mfa_code(client)}
+    )
     assert r.status_code == 201
     secret, key = r.json()["secret"], r.json()["key"]
     assert secret.startswith("dp_live_") and key["prefix"].endswith(secret[-4:])

@@ -9,6 +9,10 @@ Tokens:
 CSRF: endpoints authenticated by that cookie (refresh, cookie sign-out) require the ``X-CSRF-Token`` header to equal
 the ``__Host-dp_csrf`` cookie (double submit) AND an ``Origin`` header listed in ``DP_CORS_ORIGINS``. Sign-in also
 requires an allowed Origin (login CSRF). Non-browser clients use API keys, not these endpoints.
+
+MFA (Stage 3B.2): accounts with a confirmed authenticator send ``mfa_code`` (or ``recovery_code``) with the password;
+without one the answer is ``401 mfa_required``. Enrolment re-authenticates with the password and is refused once a
+factor is confirmed. Rejected sign-ins are recorded by ``SecurityAuditWriter`` (see ``security_events.py``).
 """
 
 import secrets
@@ -22,8 +26,18 @@ from app.core.db import DbSession
 from app.core.errors import Forbidden, Unauthorized
 from app.core.security import constant_time_equal
 
-from . import service
-from .schemas import AcceptInvitationIn, AccessTokenOut, LoginIn
+from . import mfa, service
+from .schemas import (
+    AcceptInvitationIn,
+    AccessTokenOut,
+    CodeIn,
+    ConfirmEnrollmentIn,
+    EnrollmentOut,
+    LoginIn,
+    PasswordReauthIn,
+    RecoveryCodesOut,
+)
+from .security_events import login_failure_hook
 
 REFRESH_COOKIE = "__Host-dp_refresh"
 CSRF_COOKIE = "__Host-dp_csrf"
@@ -84,14 +98,18 @@ def accept_invitation(body: AcceptInvitationIn, request: Request, db: DbSession,
 @router.post("/login")
 def login(body: LoginIn, request: Request, response: Response, db: DbSession, settings: SettingsDep) -> AccessTokenOut:
     _require_allowed_origin(request.headers.get("origin"), settings)
+    client = _client(request, settings)
     issued = service.login(
         db,
         settings,
         email=body.email,
         password=body.password,
         tenant_slug=body.tenant,
-        client=_client(request, settings),
+        client=client,
         user_agent=request.headers.get("user-agent", ""),
+        mfa_code=body.mfa_code,
+        recovery_code=body.recovery_code,
+        on_failure=login_failure_hook(request, client),
     )
     _set_session_cookies(response, issued, settings)
     return _token_out(issued, settings)
@@ -143,3 +161,50 @@ def logout(
             raise Unauthorized(service.INVALID_SESSION)
     service.logout(db, settings, session=session, client=client)
     _clear_session_cookies(response)
+
+
+# ====================================================================== MFA enrolment and recovery codes
+
+
+@router.post("/mfa/enrollment")
+def start_mfa_enrollment(
+    body: PasswordReauthIn, request: Request, db: DbSession, settings: SettingsDep
+) -> EnrollmentOut:
+    """Starts (or restarts) enrolment: a new TOTP secret to add to an authenticator app. Refused once MFA is on."""
+    _require_allowed_origin(request.headers.get("origin"), settings)
+    hook = login_failure_hook(request, _client(request, settings))
+    user = service.authenticate_password(db, email=body.email, password=body.password, on_failure=hook)
+    enrollment = mfa.start_enrollment(db, settings, user)
+    return EnrollmentOut(secret=enrollment.secret, otpauth_uri=enrollment.otpauth_uri)
+
+
+@router.post("/mfa/enrollment/confirm")
+def confirm_mfa_enrollment(
+    body: ConfirmEnrollmentIn, request: Request, db: DbSession, settings: SettingsDep
+) -> RecoveryCodesOut:
+    """Turns MFA on with a code from the new authenticator; returns ten single-use recovery codes, shown once."""
+    _require_allowed_origin(request.headers.get("origin"), settings)
+    client = _client(request, settings)
+    user = service.authenticate_password(
+        db, email=body.email, password=body.password, on_failure=login_failure_hook(request, client)
+    )
+    return RecoveryCodesOut(recovery_codes=mfa.confirm_enrollment(db, settings, user, body.code, client=client))
+
+
+@router.post("/mfa/recovery-codes")
+def regenerate_recovery_codes(
+    body: CodeIn,
+    request: Request,
+    db: DbSession,
+    settings: SettingsDep,
+    authorization: Annotated[str | None, Header()] = None,
+) -> RecoveryCodesOut:
+    """Replaces the recovery codes (the unused old ones stop working). Needs the access token and a fresh TOTP code."""
+    if not authorization or not authorization.startswith("Bearer ") or authorization.startswith("Bearer dp_live_"):
+        raise Unauthorized(service.INVALID_SESSION)
+    client = _client(request, settings)
+    authenticated = service.authenticate_access_token(
+        db, settings, authorization.removeprefix("Bearer "), client=client
+    )
+    codes = mfa.regenerate_recovery_codes(db, settings, authenticated.user, body.code, client=client)
+    return RecoveryCodesOut(recovery_codes=codes)

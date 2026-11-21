@@ -24,7 +24,7 @@ from app.modules.auth import service as auth_service
 from app.modules.auth.router import CSRF_COOKIE, CSRF_HEADER, REFRESH_COOKIE
 from app.modules.identity.models import InvitationToken, RefreshToken, User, UserSession
 from app.modules.identity.persistence import PostgresUserRepository
-from app.modules.tenants.models import Tenant, TenantMembership
+from app.modules.tenants.models import Tenant, TenantMembership, TenantSettings
 from app.modules.tenants.persistence import (
     PostgresMembershipRepository,
     PostgresRoleRepository,
@@ -52,6 +52,18 @@ def db(conn) -> Session:
 def browser(pg_db, settings: Settings | None = None, registry: Registry | None = None) -> TestClient:
     app = create_app(settings or Settings(env="test"), registry or demo_registry(), database=pg_db)
     return TestClient(app, base_url=BASE)
+
+
+@pytest.fixture(autouse=True)
+def password_only_policy(request) -> None:
+    """These tests cover the password + session flow, so the demo tenant's "Require MFA" is turned off here. MFA
+    itself (and require_mfa) is covered in test_mfa.py. Tests on committed data (concurrency) do it themselves: they
+    must not open the uncommitted pg_conn seed, which would block their own seeding."""
+    if "pg_conn" not in request.fixturenames:
+        return
+    with db(request.getfixturevalue("pg_conn")) as s:
+        s.execute(update(TenantSettings).values(require_mfa=False))
+        s.commit()
 
 
 @pytest.fixture
@@ -238,6 +250,7 @@ def test_concurrent_acceptances_consume_the_invitation_exactly_once(migrated, ow
     try:
         with migrated.session() as s:
             seed_demo(s)
+            s.execute(update(TenantSettings).values(require_mfa=False))  # password-only flow (see the fixture)
             token = auth_service.issue_invitation(s, settings, tenant_slug="acme", email=email, role_key="viewer").token
         barrier, results = threading.Barrier(4), []
 
@@ -568,6 +581,7 @@ def test_concurrent_refreshes_cannot_fork_the_family(migrated, owner_database):
     try:
         with migrated.session() as s:
             seed_demo(s)
+            s.execute(update(TenantSettings).values(require_mfa=False))  # password-only flow (see the fixture)
             token = auth_service.issue_invitation(s, settings, tenant_slug="acme", email=email, role_key="viewer").token
         with migrated.session() as s:
             auth_service.accept_invitation(s, settings, token=token, password=PASSWORD)
