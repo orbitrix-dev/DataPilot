@@ -11,6 +11,7 @@ import { trustRoutes } from '../features/trust/routes'
 import { insightsRoutes } from '../features/insights/routes'
 import { intelligenceRoutes } from '../features/intelligence/routes'
 import { automateRoutes } from '../features/automate/routes'
+import { commandCenterRoutes } from '../features/command-center/routes'
 
 /**
  * Feature modules register their routes here.
@@ -20,6 +21,7 @@ import { automateRoutes } from '../features/automate/routes'
  */
 const shellRoutes: RouteObject[] = [
   // feature:shell-routes
+  ...commandCenterRoutes,
   ...designSystemRoutes,
   ...connectRoutes,
   ...trustRoutes,

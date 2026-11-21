@@ -42,7 +42,7 @@ export function resolveIncident(id: string, time: string) {
     ...state,
     incidents: state.incidents.map((i) =>
       i.id === id
-        ? { ...i, status: 'resolved', history: [...i.history, { time, text: 'Marked resolved by Elena Vance' }] }
+        ? { ...i, status: 'resolved', history: [...i.history, { time, text: 'Marked resolved by Elena Vance', at: Date.now() }] }
         : i,
     ),
   })
@@ -55,7 +55,7 @@ export function addRule(rule: QualityRule) {
 export function markFresh(dataset: string, lastUpdated: string) {
   setState({
     ...state,
-    freshness: state.freshness.map((f) => (f.dataset === dataset ? { ...f, status: 'on-time', lastUpdated } : f)),
+    freshness: state.freshness.map((f) => (f.dataset === dataset ? { ...f, status: 'on-time', lastUpdated, refreshedAt: Date.now() } : f)),
   })
 }
 

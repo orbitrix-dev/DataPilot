@@ -66,7 +66,7 @@ function patchWorkflow(id: string, patch: (w: Workflow) => Partial<Workflow>, au
     ...state,
     workflows: state.workflows.map((w) =>
       w.id === id
-        ? { ...w, ...patch(w), audit: audit ? [{ text: audit, actor: ME_ROLE, time: nowLabel() }, ...w.audit] : w.audit }
+        ? { ...w, ...patch(w), audit: audit ? [{ text: audit, actor: ME_ROLE, time: nowLabel(), at: Date.now() }, ...w.audit] : w.audit }
         : w,
     ),
   })
@@ -89,7 +89,7 @@ export function createWorkflow(templateId?: string): string {
         conditions: structuredClone(t.conditions),
         action: structuredClone(t.action),
         configured: { trigger: true, conditions: true, action: true },
-        audit: [{ text: `Created from Marketplace template “${t.name}”`, actor: ME_ROLE, time: nowLabel() }],
+        audit: [{ text: `Created from Marketplace template “${t.name}”`, actor: ME_ROLE, time: nowLabel(), at: Date.now() }],
       }
     : {
         id,
@@ -100,7 +100,7 @@ export function createWorkflow(templateId?: string): string {
         conditions: { match: 'all', rules: [] },
         action: { type: '', target: '', approver: 'finance', retry: 'backoff-3' },
         configured: { trigger: false, conditions: false, action: false },
-        audit: [{ text: 'Created blank workflow', actor: ME_ROLE, time: nowLabel() }],
+        audit: [{ text: 'Created blank workflow', actor: ME_ROLE, time: nowLabel(), at: Date.now() }],
       }
   setState({ ...state, workflows: [...state.workflows, workflow] })
   return id
@@ -156,7 +156,7 @@ export function setPaused(id: string, paused: boolean) {
 /** Records a dry run. Nothing leaves DataPilot. */
 export function recordTest(workflowId: string, summary: string, steps: Step[]): string {
   const id = nextRunId()
-  const run: Run = { id, workflowId, outcome: 'test', approvedBy: 'Dry run (test)', time: nowLabel(), inLast7d: false, summary, steps }
+  const run: Run = { id, workflowId, outcome: 'test', approvedBy: 'Dry run (test)', time: nowLabel(), at: Date.now(), inLast7d: false, summary, steps }
   setState({ ...state, runs: [run, ...state.runs] })
   patchWorkflow(workflowId, () => ({}), `Ran dry-run test ${id}`)
   return id
@@ -172,6 +172,7 @@ function finishRun(runId: string, result: string) {
         ? {
             ...r,
             outcome: 'executed',
+            at: Date.now(),
             steps: r.steps.map((s) =>
               s.status === 'running' ? { ...s, title: 'Action executed', detail: result, time: nowLabel(true), status: 'ok', note: 'Sent' } : s,
             ),
@@ -199,6 +200,7 @@ export function approveRequest(requestId: string, trustWarning?: string): string
     outcome: 'running',
     approvedBy: ME,
     time: nowLabel(),
+    at: Date.now(),
     inLast7d: true,
     summary: req.title,
     steps: [
@@ -241,6 +243,7 @@ export function rejectRequest(requestId: string, reason: string) {
     outcome: 'rejected',
     approvedBy: ME,
     time: nowLabel(),
+    at: Date.now(),
     inLast7d: false,
     summary: req.title,
     steps: [
@@ -272,6 +275,7 @@ export function retryRun(runId: string) {
         ? {
             ...r,
             outcome: 'running',
+            at: Date.now(),
             steps: [
               ...r.steps,
               {

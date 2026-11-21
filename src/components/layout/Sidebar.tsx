@@ -1,7 +1,28 @@
-import { NavLink } from 'react-router-dom'
+import { Link, NavLink } from 'react-router-dom'
 import { Icon } from '../ui/Icon'
 import { cn } from '../../lib/cn'
 import { adminNav, platformNav, type NavItem } from './navigation'
+import { useTrustState } from '../../features/trust/store'
+import { useConnectState } from '../../features/connect/store'
+
+/** Live status for the sidebar footer: open Trust incidents, then failing Connect sources (designed on command_center_overview). */
+function useSystemStatus() {
+  const { incidents } = useTrustState()
+  const { connections } = useConnectState()
+  const open = incidents.filter((i) => i.status !== 'resolved')
+  const failing = connections.filter((c) => c.status === 'failed')
+  if (open.length) {
+    return {
+      dot: open.some((i) => i.severity === 'critical') ? 'bg-error' : 'bg-warning',
+      title: `${open.length} active ${open.length === 1 ? 'incident' : 'incidents'}`,
+      detail: open[0].shortTitle,
+    }
+  }
+  if (failing.length) {
+    return { dot: 'bg-error', title: `${failing.length} ${failing.length === 1 ? 'source' : 'sources'} failing`, detail: failing[0].name }
+  }
+  return { dot: 'bg-success', title: 'US-East-1 Prod', detail: 'All systems operational' }
+}
 
 function NavGroup({ title, items, collapsed, onNavigate }: { title: string; items: NavItem[]; collapsed: boolean; onNavigate: () => void }) {
   return (
@@ -45,6 +66,7 @@ export function Sidebar({
 }) {
   // On mobile the drawer always shows labels.
   const showCollapsed = collapsed && !mobileOpen
+  const status = useSystemStatus()
   return (
     <>
       {mobileOpen && <div className="fixed inset-0 z-40 bg-light-on-surface/40 lg:hidden" onClick={onCloseMobile} />}
@@ -93,15 +115,25 @@ export function Sidebar({
         </div>
 
         <div className="p-3 border-t border-light-outline-variant">
-          <div className={cn('flex items-center gap-2.5 py-2 rounded bg-light-surface-container-low', showCollapsed ? 'justify-center' : 'px-2.5')}>
-            <span className="w-2 h-2 rounded-full bg-success shrink-0" aria-hidden="true" />
-            {!showCollapsed && (
+          <Link
+            to="/command-center/alerts"
+            onClick={onCloseMobile}
+            title={showCollapsed ? `${status.title}: ${status.detail}` : undefined}
+            className={cn(
+              'flex items-center gap-2.5 py-2 rounded bg-light-surface-container-low hover:bg-light-surface-container transition-colors duration-state-change focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-light-primary',
+              showCollapsed ? 'justify-center' : 'px-2.5',
+            )}
+          >
+            <span className={cn('w-2 h-2 rounded-full shrink-0', status.dot)} aria-hidden="true" />
+            {showCollapsed ? (
+              <span className="sr-only">{`${status.title}: ${status.detail}`}</span>
+            ) : (
               <div className="overflow-hidden">
-                <p className="font-label text-label-md text-light-on-surface">US-East-1 Prod</p>
-                <p className="font-body text-body-sm text-light-on-surface-variant">All systems operational</p>
+                <p className="font-label text-label-md text-light-on-surface">{status.title}</p>
+                <p className="font-body text-body-sm text-light-on-surface-variant truncate">{status.detail}</p>
               </div>
             )}
-          </div>
+          </Link>
         </div>
       </aside>
     </>
