@@ -13,6 +13,9 @@ requires an allowed Origin (login CSRF). Non-browser clients use API keys, not t
 MFA (Stage 3B.2): accounts with a confirmed authenticator send ``mfa_code`` (or ``recovery_code``) with the password;
 without one the answer is ``401 mfa_required``. Enrolment re-authenticates with the password and is refused once a
 factor is confirmed. Rejected sign-ins are recorded by ``SecurityAuditWriter`` (see ``security_events.py``).
+
+Abuse protection (Stage 3B.3): every password and code check is counted in the shared limiter (``throttle.py``)
+before it runs: 429 with Retry-After when over a limit, 503 if the limiter is unavailable or not configured.
 """
 
 import secrets
@@ -37,7 +40,7 @@ from .schemas import (
     PasswordReauthIn,
     RecoveryCodesOut,
 )
-from .security_events import login_failure_hook, record_rejection, writer_for
+from .security_events import login_failure_hook, record_rejection, throttle_for, writer_for
 
 REFRESH_COOKIE = "__Host-dp_refresh"
 CSRF_COOKIE = "__Host-dp_csrf"
@@ -109,6 +112,7 @@ def login(body: LoginIn, request: Request, response: Response, db: DbSession, se
         user_agent=request.headers.get("user-agent", ""),
         mfa_code=body.mfa_code,
         recovery_code=body.recovery_code,
+        throttle=throttle_for(request),
         on_failure=login_failure_hook(request, client),
     )
     _set_session_cookies(response, issued, settings)
@@ -172,8 +176,15 @@ def start_mfa_enrollment(
 ) -> EnrollmentOut:
     """Starts (or restarts) enrolment: a new TOTP secret to add to an authenticator app. Refused once MFA is on."""
     _require_allowed_origin(request.headers.get("origin"), settings)
-    hook = login_failure_hook(request, _client(request, settings))
-    user = service.authenticate_password(db, email=body.email, password=body.password, on_failure=hook)
+    client = _client(request, settings)
+    user = service.authenticate_password(
+        db,
+        email=body.email,
+        password=body.password,
+        throttle=throttle_for(request),
+        client=client,
+        on_failure=login_failure_hook(request, client),
+    )
     enrollment = mfa.start_enrollment(db, settings, user)
     return EnrollmentOut(secret=enrollment.secret, otpauth_uri=enrollment.otpauth_uri)
 
@@ -185,10 +196,17 @@ def confirm_mfa_enrollment(
     """Turns MFA on with a code from the new authenticator; returns ten single-use recovery codes, shown once."""
     _require_allowed_origin(request.headers.get("origin"), settings)
     client = _client(request, settings)
+    throttle = throttle_for(request)
     user = service.authenticate_password(
-        db, email=body.email, password=body.password, on_failure=login_failure_hook(request, client)
+        db,
+        email=body.email,
+        password=body.password,
+        throttle=throttle,
+        client=client,
+        on_failure=login_failure_hook(request, client),
     )
-    return RecoveryCodesOut(recovery_codes=mfa.confirm_enrollment(db, settings, user, body.code, client=client))
+    codes = mfa.confirm_enrollment(db, settings, user, body.code, throttle=throttle, client=client)
+    return RecoveryCodesOut(recovery_codes=codes)
 
 
 @router.post("/mfa/recovery-codes")
@@ -207,7 +225,9 @@ def regenerate_recovery_codes(
         db, settings, authorization.removeprefix("Bearer "), client=client
     )
     try:
-        codes = mfa.regenerate_recovery_codes(db, settings, authenticated.user, body.code, client=client)
+        codes = mfa.regenerate_recovery_codes(
+            db, settings, authenticated.user, body.code, throttle=throttle_for(request), client=client
+        )
     except (mfa.StepUpFailed, mfa.MfaNotEnabled) as exc:
         # The request rolls back (the previous set stays valid); the refusal is recorded independently.
         record_rejection(

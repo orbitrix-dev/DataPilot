@@ -36,7 +36,7 @@ from app.modules.tenants.models import TenantSettings
 from app.seed import _audit, demo_registry
 from app.seed_postgres import seed_demo
 
-from .conftest import RecordingSecurityAudit, mfa_code
+from .conftest import RecordingSecurityAudit, make_app, mfa_code
 from .factories import remove_demo
 
 BASE = "https://testserver/api/v1"
@@ -55,7 +55,7 @@ class Browser:
 
     def __init__(self, pg_db, settings: Settings | None = None) -> None:
         self.audit = RecordingSecurityAudit()
-        app = create_app(settings or Settings(env="test"), demo_registry(), database=pg_db, security_audit=self.audit)
+        app = make_app(settings or Settings(env="test"), demo_registry(), database=pg_db, security_audit=self.audit)
         self.http = TestClient(app, base_url=BASE)
 
     def post(self, path: str, body: dict | None = None, **headers):
@@ -278,7 +278,7 @@ def test_an_older_step_is_refused_after_a_newer_one_was_used(web, pg_conn):
     assert web.login(mfa_code=totp.now()).status_code == 401  # earlier step than the last accepted one
 
 
-def test_concurrent_use_of_one_code_succeeds_once(migrated, owner_database):
+def test_concurrent_use_of_one_code_succeeds_once(migrated, owner_database, throttle):
     """Two committed verifications of the same code race on separate connections; only one can record the step."""
     settings = Settings(env="test")
     email = "mfa.race@acme.io"
@@ -287,7 +287,8 @@ def test_concurrent_use_of_one_code_succeeds_once(migrated, owner_database):
             seed_demo(s)
             user = s.scalar(select(User).where(User.public_id == "u-lena"))
             secret = mfa.start_enrollment(s, settings, user).secret
-            mfa.confirm_enrollment(s, settings, user, pyotp.TOTP(secret).at(clock.now() - timedelta(seconds=30)))
+            earlier = pyotp.TOTP(secret).at(clock.now() - timedelta(seconds=30))
+            mfa.confirm_enrollment(s, settings, user, earlier, throttle=throttle)
         code = pyotp.TOTP(secret).now()
         barrier, results = threading.Barrier(2), []
 

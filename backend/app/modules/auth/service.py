@@ -54,6 +54,7 @@ from app.modules.identity.persistence import new_member_public_id, normalize_ema
 from app.modules.tenants.models import Role, Tenant, TenantMembership, TenantSettings
 
 from . import mfa
+from .throttle import AuthThrottle, account_subject, address_subject
 
 INVITATION_PREFIX = "dpi_"
 REFRESH_PREFIX = "dpr_"
@@ -294,8 +295,23 @@ def _ignore_failure(action: str, reason: str, user: User | None, tenant_id: uuid
     pass
 
 
-def authenticate_password(db: Session, *, email: str, password: str, on_failure: FailureHook = _ignore_failure) -> User:
-    """The user whose password this is, or the uniform 401. Spends one Argon2 verification in every case."""
+def authenticate_password(
+    db: Session,
+    *,
+    email: str,
+    password: str,
+    throttle: AuthThrottle,
+    client: str,
+    on_failure: FailureHook = _ignore_failure,
+) -> User:
+    """The user whose password this is, or the uniform 401. Spends one Argon2 verification in every case.
+
+    Throttled first (Stage 3B.3), for unknown and existing accounts alike: the attempt is counted against the client
+    address (``login_ip``) and the normalized email (``login_account``) before any lookup or hashing; 429 once over a
+    limit, 503 if the limiter can't decide. A correct password for an active account resets the account count."""
+    throttle.enforce("login_ip", address_subject(client), client=client)
+    account = account_subject(email)
+    throttle.enforce("login_account", account, client=client)
     try:
         normalized = normalize_email(email)
     except ValueError:
@@ -313,6 +329,7 @@ def authenticate_password(db: Session, *, email: str, password: str, on_failure:
             reason = "account_disabled"
         on_failure("login.failed", reason, user, None)
         raise Unauthorized(INVALID_CREDENTIALS)
+    throttle.reset("login_account", account)
     return user
 
 
@@ -327,10 +344,13 @@ def login(
     user_agent: str,
     mfa_code: str | None = None,
     recovery_code: str | None = None,
+    throttle: AuthThrottle,
     on_failure: FailureHook = _ignore_failure,
 ) -> IssuedSession:
     jwt_keyring(settings)  # fail before any work if signing isn't configured
-    user = authenticate_password(db, email=email, password=password, on_failure=on_failure)
+    user = authenticate_password(
+        db, email=email, password=password, throttle=throttle, client=client, on_failure=on_failure
+    )
     memberships = _active_memberships(db, user)
     if tenant_slug is not None:
         memberships = [(m, t) for m, t in memberships if t.slug == tenant_slug]
@@ -349,7 +369,17 @@ def login(
         if not mfa_code and not recovery_code:
             on_failure("login.failed", "mfa_required", user, tenant.id)  # the password was right; no code sent
             raise mfa.MfaRequired("Enter the code from your authenticator app")
-        second = mfa.verify_second_factor(db, settings, user, factor, code=mfa_code, recovery_code=recovery_code)
+        second = mfa.verify_second_factor(
+            db,
+            settings,
+            user,
+            factor,
+            code=mfa_code,
+            recovery_code=recovery_code,
+            throttle=throttle,
+            client=client,
+            tenant_id=tenant.id,
+        )
         if second is None:
             on_failure("login.failed", "mfa_invalid" if mfa_code else "recovery_code_invalid", user, tenant.id)
             raise mfa.InvalidMfaCode("Invalid verification code")

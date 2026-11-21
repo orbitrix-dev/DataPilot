@@ -16,7 +16,6 @@ from app.core.config import Settings
 from app.core.context import Principal, RequestContext
 from app.db.base import uuid7
 from app.deps import Ctx
-from app.main import create_app
 from app.modules.audit import service as audit
 from app.modules.audit.models import AuditEventRecord
 from app.modules.audit.repository import PostgresAuditRepository
@@ -24,7 +23,7 @@ from app.modules.audit.sanitize import REDACTED, redact
 from app.modules.audit.security_writer import SecurityAuditWriter
 from app.seed import demo_tenant
 
-from .conftest import mfa_code
+from .conftest import make_app, mfa_code
 
 BASE = "http://testserver/api/v1"
 
@@ -134,7 +133,7 @@ def test_real_call_sites_store_redacted_summaries_and_metadata(client, pg_conn):
 
 
 def test_every_free_text_column_is_redacted_when_stored(pg_db, pg_conn, registry):
-    app = create_app(Settings(env="test"), registry, database=pg_db)
+    app = make_app(Settings(env="test"), registry, database=pg_db)
 
     @app.post("/api/v1/_probe/audit")
     def probe(ctx: Ctx) -> dict:
@@ -224,7 +223,7 @@ def test_metadata_validation_errors_never_contain_the_offending_value():
 
 def test_a_rejected_row_does_not_put_the_credential_in_logs_or_the_response(pg_db, registry, caplog):
     """If a credential ever got past redaction, the CHECK rejects it; the 500 and the log line must not repeat it."""
-    app = create_app(Settings(env="test"), registry, database=pg_db)
+    app = make_app(Settings(env="test"), registry, database=pg_db)
     secret = "dp_live_0123456789abcdef0123"
 
     @app.post("/api/v1/_probe/raw-leak")

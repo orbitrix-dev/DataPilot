@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.security import api_key_digest, parse_keyring
-from app.main import create_app
 from app.modules.audit.actions import ACTIONS
 from app.modules.audit.models import AuditEventRecord
 from app.modules.identity.persistence import PostgresUserRepository
@@ -25,7 +24,7 @@ from app.modules.tenants.persistence import (
 from app.seed import demo_registry, demo_tenant
 from app.tenant_data import Registry
 
-from .conftest import as_user, mfa_code
+from .conftest import as_user, make_app, mfa_code
 from .factories import DEMO_MATRIX
 
 BASE = "http://testserver/api/v1"
@@ -73,7 +72,7 @@ def test_only_a_peppered_digest_is_stored(client, pg_conn):
 def test_keys_live_only_in_postgresql(pg_db, client):
     """A brand-new app with a fresh in-memory registry still authenticates the key: nothing lives in process memory."""
     _, secret = create_key(client)
-    fresh = TestClient(create_app(Settings(env="test"), demo_registry(), database=pg_db), base_url=BASE)
+    fresh = TestClient(make_app(Settings(env="test"), demo_registry(), database=pg_db), base_url=BASE)
     assert fresh.get("/trust/incidents", headers=bearer(secret)).status_code == 200
 
 
@@ -130,7 +129,7 @@ def test_a_digest_recorded_under_another_pepper_version_does_not_match(client, p
 
 def _app_with_peppers(pg_db, peppers: str, active: str) -> TestClient:
     settings = Settings(env="test", api_key_peppers=peppers, api_key_pepper_version=active)
-    return TestClient(create_app(settings, demo_registry(), database=pg_db), base_url=BASE)
+    return TestClient(make_app(settings, demo_registry(), database=pg_db), base_url=BASE)
 
 
 def test_pepper_rotation_rehashes_keys_on_use(client, pg_db, pg_conn):
@@ -177,7 +176,7 @@ def test_keys_are_scoped_to_their_tenant(pg_db, pg_conn):
         PostgresMembershipRepository(s, t.id).add(bob.id, PostgresRoleRepository(s, t.id).find_by_key("admin").id)
         s.commit()
     c = TestClient(
-        create_app(Settings(env="test"), Registry({"acme": demo_tenant(), "globex": demo_tenant()}), database=pg_db),
+        make_app(Settings(env="test"), Registry({"acme": demo_tenant(), "globex": demo_tenant()}), database=pg_db),
         base_url=BASE,
     )
     globex = {"X-DataPilot-Tenant": "globex", **as_user("u-bob")}
@@ -198,13 +197,15 @@ def test_key_creation_and_its_audit_event_are_atomic(client, pg_conn):
     with db(pg_conn) as s:
         keys_before = s.scalar(select(func.count()).select_from(ApiKey))
         events_before = s.scalar(select(func.count()).select_from(AuditEventRecord))
-    event.listen(Session, "before_commit", fail)
+    # Only the request's own sessions fail to commit (the abuse-protection limiter commits on its own pool).
+    request_sessions = client.app.state.db._sessions
+    event.listen(request_sessions, "before_commit", fail)
     try:
         r = TestClient(client.app, base_url=BASE, raise_server_exceptions=False).post(
             "/api-keys", json={"name": "Never", "scopes": ["trust:read"], "mfa_code": code}
         )
     finally:
-        event.remove(Session, "before_commit", fail)
+        event.remove(request_sessions, "before_commit", fail)
     assert r.status_code == 500
     with db(pg_conn) as s:
         assert s.scalar(select(func.count()).select_from(ApiKey)) == keys_before

@@ -29,7 +29,7 @@ from app.modules.tenants.models import TenantSettings
 from app.seed import _audit, demo_registry
 from app.seed_postgres import seed_demo
 
-from .conftest import TEST_DATABASE_URL, RecordingSecurityAudit
+from .conftest import TEST_DATABASE_URL, RecordingSecurityAudit, make_app
 from .factories import remove_demo
 from .test_audit_postgres import _remove_global
 
@@ -95,12 +95,16 @@ def _usable(database, code: str, email: str = EMAIL) -> bool:
     return ok
 
 
+_LIMITER: dict = {}
+
+
 @pytest.fixture
-def committed(migrated, owner_database) -> Iterator[Enrolled]:
+def committed(migrated, owner_database, throttle) -> Iterator[Enrolled]:
     """Committed demo tenant ("Require MFA" off), a member with a password and a confirmed authenticator (EMAIL), and
     a member with a password only (PLAIN). Everything is removed afterwards."""
     settings = _settings()
     started = clock.now()
+    _LIMITER["throttle"] = throttle
     try:
         with migrated.session() as s:
             seed_demo(s)
@@ -112,7 +116,7 @@ def committed(migrated, owner_database) -> Iterator[Enrolled]:
                 auth_service.accept_invitation(s, settings, token=token, password=PASSWORD)
             user = _user(s)
             secret = mfa.start_enrollment(s, settings, user).secret
-            codes = mfa.confirm_enrollment(s, settings, user, pyotp.TOTP(secret).now())
+            codes = mfa.confirm_enrollment(s, settings, user, pyotp.TOTP(secret).now(), throttle=throttle)
         _clear_last_step(migrated)
         yield Enrolled(pyotp.TOTP(secret), codes)
     finally:
@@ -130,7 +134,7 @@ def committed(migrated, owner_database) -> Iterator[Enrolled]:
 
 def _regenerate(database, code: str) -> list[str]:
     with database.session() as s:
-        return mfa.regenerate_recovery_codes(s, _settings(), _user(s), code)
+        return mfa.regenerate_recovery_codes(s, _settings(), _user(s), code, throttle=_LIMITER["throttle"])
 
 
 def _race(database, codes: list[str]) -> list[object]:
@@ -300,7 +304,7 @@ def test_unknown_accounts_are_recorded_without_the_submitted_email(web_with_reco
 @pytest.fixture
 def web_with_recorder(pg_db) -> tuple[TestClient, RecordingSecurityAudit]:
     audit = RecordingSecurityAudit()
-    app = create_app(_settings(), demo_registry(), database=pg_db, security_audit=audit)
+    app = make_app(_settings(), demo_registry(), database=pg_db, security_audit=audit)
     return TestClient(app, base_url=BASE), audit
 
 
@@ -340,7 +344,7 @@ def test_authentication_answers_are_unchanged_when_the_writer_fails(pg_db, pg_co
     reason only) and the health endpoint reports it."""
     writer = SecurityAuditWriter(DEAD_DB, timeout_seconds=1)
     try:
-        app = create_app(_settings(), demo_registry(), database=pg_db, security_audit=writer)
+        app = make_app(_settings(), demo_registry(), database=pg_db, security_audit=writer)
         http = TestClient(app, base_url=BASE)
         with caplog.at_level(logging.WARNING):
             r = http.post(
@@ -375,7 +379,7 @@ def test_the_health_endpoint_reports_unknown_then_ok(migrated, owner_database):
 
 
 def test_the_health_endpoint_reports_a_missing_writer(pg_db):
-    missing = TestClient(create_app(_settings(), demo_registry(), database=pg_db))
+    missing = TestClient(make_app(_settings(), demo_registry(), database=pg_db))
     r = missing.get("/healthz/security-audit")
     assert r.status_code == 503 and r.json() == {"status": "unavailable", "security_audit": "not_configured"}
 

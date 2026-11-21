@@ -103,6 +103,9 @@ _ACTIONS = (
     _a("api-key.rejected", "API Key Rejected", *_PG, reason="str"),
     _a("api-key.step_up_failed", "Step-up Verification Failed", *_PG, reason="str"),
     _a("user.recovery_codes_step_up_failed", "Recovery Code Regeneration Refused", *_PG, reason="str"),
+    # ---- Abuse protection (Stage 3B.3): recorded once when a subject becomes blocked, not per refused request.
+    _a("login.throttled", "Sign-in Throttled", *_PG, scope="str", retry_after_seconds="int"),
+    _a("api-key.throttled", "API Key Attempts Throttled", *_PG, scope="str", retry_after_seconds="int"),
 )
 
 ACTIONS: MappingProxyType = MappingProxyType({a.code: a for a in _ACTIONS})

@@ -14,6 +14,9 @@ Security properties (each covered by tests):
   first locks the user's row (``SELECT … FOR UPDATE``), so concurrent requests for one user run one after the other
   and can never leave two active sets; the step-up check, revocation and insertion share the caller's transaction, so
   a failure leaves the previous set intact.
+- **Throttled** (Stage 3B.3): every code check (sign-in, enrolment confirmation, regeneration, step-up) is first
+  counted against the user's ``mfa`` (or ``recovery_code``) scope in the shared limiter, and a correct code resets
+  it. A wrong or replayed code is a failed attempt. Throttling never touches the row locks or the single-use rules.
 - **Enrolment can't replace a factor.** Starting or confirming enrolment is refused once a factor is confirmed, so a
   stolen password alone can't swap in an attacker's authenticator.
 """
@@ -22,6 +25,7 @@ from __future__ import annotations
 
 import hmac
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -46,6 +50,8 @@ from app.modules.audit.repository import PostgresAuditRepository
 from app.modules.audit.service import record_event
 from app.modules.identity.models import MfaRecoveryCode, MfaTotpFactor, User
 from app.modules.tenants.models import TenantMembership
+
+from .throttle import AuthThrottle, user_subject
 
 TOTP_PERIOD = 30
 TOTP_DIGITS = 6
@@ -192,6 +198,27 @@ def _new_recovery_codes(db: Session, user: User) -> list[str]:
     return codes
 
 
+def _checked_totp(
+    db: Session,
+    settings: Settings,
+    user: User,
+    factor: MfaTotpFactor,
+    code: str,
+    *,
+    throttle: AuthThrottle,
+    client: str,
+    tenant_id: uuid.UUID | None = None,
+) -> bool:
+    """verify_totp behind the user's ``mfa`` throttle: the attempt is counted first (429 once over the limit, 503 if
+    the limiter can't decide) and a correct code resets the count."""
+    subject = user_subject(user)
+    throttle.enforce("mfa", subject, client=client, user=user, tenant_id=tenant_id)
+    if not verify_totp(db, settings, user, factor, code):
+        return False
+    throttle.reset("mfa", subject)
+    return True
+
+
 @dataclass(frozen=True)
 class SecondFactor:
     method: str  # "totp" | "recovery_code"
@@ -199,13 +226,28 @@ class SecondFactor:
 
 
 def verify_second_factor(
-    db: Session, settings: Settings, user: User, factor: MfaTotpFactor, *, code: str | None, recovery_code: str | None
+    db: Session,
+    settings: Settings,
+    user: User,
+    factor: MfaTotpFactor,
+    *,
+    code: str | None,
+    recovery_code: str | None,
+    throttle: AuthThrottle,
+    client: str,
+    tenant_id: uuid.UUID | None = None,
 ) -> SecondFactor | None:
     if code:
-        return SecondFactor("totp") if verify_totp(db, settings, user, factor, code) else None
+        ok = _checked_totp(db, settings, user, factor, code, throttle=throttle, client=client, tenant_id=tenant_id)
+        return SecondFactor("totp") if ok else None
     if recovery_code:
+        subject = user_subject(user)
+        throttle.enforce("recovery_code", subject, client=client, user=user, tenant_id=tenant_id)
         left = consume_recovery_code(db, user, recovery_code)
-        return None if left is None else SecondFactor("recovery_code", left)
+        if left is None:
+            return None
+        throttle.reset("recovery_code", subject)
+        return SecondFactor("recovery_code", left)
     return None
 
 
@@ -263,7 +305,9 @@ def _audit_everywhere(
         )
 
 
-def confirm_enrollment(db: Session, settings: Settings, user: User, code: str, *, client: str = "") -> list[str]:
+def confirm_enrollment(
+    db: Session, settings: Settings, user: User, code: str, *, throttle: AuthThrottle, client: str = ""
+) -> list[str]:
     """Proves the authenticator works, enables MFA and returns ten recovery codes (shown once)."""
     user = lock_user(db, user)
     factor = factor_for(db, user, confirmed=False)
@@ -271,7 +315,7 @@ def confirm_enrollment(db: Session, settings: Settings, user: User, code: str, *
         raise Conflict("Start MFA enrolment first")
     if factor.confirmed_at is not None:
         raise Conflict("MFA is already enabled for this account")
-    if not verify_totp(db, settings, user, factor, code):
+    if not _checked_totp(db, settings, user, factor, code, throttle=throttle, client=client):
         raise InvalidMfaCode("Invalid verification code")
     now = clock.now()
     factor.confirmed_at = now
@@ -281,7 +325,9 @@ def confirm_enrollment(db: Session, settings: Settings, user: User, code: str, *
     return codes
 
 
-def regenerate_recovery_codes(db: Session, settings: Settings, user: User, code: str, *, client: str = "") -> list[str]:
+def regenerate_recovery_codes(
+    db: Session, settings: Settings, user: User, code: str, *, throttle: AuthThrottle, client: str = ""
+) -> list[str]:
     """Replaces the set after a fresh TOTP check, all under the user's row lock and in the caller's transaction."""
     user = lock_user(db, user)
     factor = factor_for(db, user)
@@ -289,7 +335,7 @@ def regenerate_recovery_codes(db: Session, settings: Settings, user: User, code:
         db.refresh(factor)  # the state committed by whoever held the lock before us
     if factor is None:
         raise MfaNotEnabled("MFA is not enabled for this account")
-    if not verify_totp(db, settings, user, factor, code):
+    if not _checked_totp(db, settings, user, factor, code, throttle=throttle, client=client):
         raise StepUpFailed("Invalid verification code")
     codes = _new_recovery_codes(db, user)
     _audit_everywhere(db, settings, user, "user.recovery_codes_regenerated", "Generated new recovery codes", client)
@@ -299,11 +345,20 @@ def regenerate_recovery_codes(db: Session, settings: Settings, user: User, code:
 # ====================================================================== step-up
 
 
-def require_step_up(db: Session, settings: Settings, user_public_id: str, code: str) -> None:
+def require_step_up(
+    db: Session,
+    settings: Settings,
+    user_public_id: str,
+    code: str,
+    *,
+    throttle: AuthThrottle,
+    client: str,
+    tenant_id: uuid.UUID | None = None,
+) -> None:
     """Sensitive actions (creating an API key) need a fresh TOTP code from the acting user's confirmed factor."""
     user = db.scalar(select(User).where(User.public_id == user_public_id))
     factor = factor_for(db, user) if user is not None else None
     if user is None or factor is None:
         raise MfaEnrollmentRequired("Enable multi-factor authentication to perform this action")
-    if not verify_totp(db, settings, user, factor, code):
+    if not _checked_totp(db, settings, user, factor, code, throttle=throttle, client=client, tenant_id=tenant_id):
         raise StepUpFailed("Invalid verification code")

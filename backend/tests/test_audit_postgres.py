@@ -26,7 +26,6 @@ from app.modules.audit.models import AuditEventRecord
 from app.modules.audit.repository import AuditEntry, InMemoryAuditRepository, PostgresAuditRepository
 from app.modules.audit.sanitize import REDACTED, redact
 from app.modules.audit.security_writer import SecurityAuditWriter
-from app.modules.auth import enforcement
 from app.modules.identity.persistence import PostgresUserRepository
 from app.modules.tenants.persistence import (
     PostgresMembershipRepository,
@@ -36,7 +35,7 @@ from app.modules.tenants.persistence import (
 from app.seed import DEMO_AUDIT_ACTIONS, demo_registry, demo_tenant
 from app.tenant_data import Registry
 
-from .conftest import TEST_DATABASE_URL, as_user, audit_events, mfa_code
+from .conftest import TEST_DATABASE_URL, as_user, audit_events, make_app, mfa_code
 from .factories import DEMO_MATRIX
 
 BASE = "http://testserver/api/v1"
@@ -138,6 +137,8 @@ SECURITY_WRITER_ACTIONS = {
     "api-key.rejected",
     "api-key.step_up_failed",
     "user.recovery_codes_step_up_failed",
+    "login.throttled",
+    "api-key.throttled",
 }
 
 
@@ -334,9 +335,9 @@ def test_memory_actions_never_record_phantom_success_events(client, pg_conn):
 
 
 def test_after_a_restart_the_event_survives_but_the_in_memory_change_does_not(pg_db, pg_conn):
-    first = TestClient(create_app(Settings(env="test"), demo_registry(), database=pg_db), base_url=BASE)
+    first = TestClient(make_app(Settings(env="test"), demo_registry(), database=pg_db), base_url=BASE)
     assert first.put("/notifications/preferences/approvals", json={"enabled": False}).status_code == 200
-    second = TestClient(create_app(Settings(env="test"), demo_registry(), database=pg_db), base_url=BASE)
+    second = TestClient(make_app(Settings(env="test"), demo_registry(), database=pg_db), base_url=BASE)
     prefs = {p["category"]: p["enabled"] for p in second.get("/notifications/preferences").json()}
     assert prefs["approvals"] is True  # the in-memory state is gone
     assert audit_events(second, limit=1)[0]["detail"] == "Disabled Automate Approval Requests"  # the event isn't
@@ -352,7 +353,6 @@ def test_production_is_blocked_while_retention_is_not_enforced():
 
 def test_production_is_blocked_if_a_memory_backed_action_is_production_enabled(monkeypatch):
     monkeypatch.setattr(retention, "is_enforced", lambda: True)
-    monkeypatch.setattr(enforcement, "abuse_protection_enforced", lambda: True)
     good = [a for a in ACTIONS.values() if a.business_store == "postgres"]
     assert production_blockers(good) == []
     sneaky = AuditAction("billing.plan_changed", "Plan Changed", "memory", "transitional", True)
@@ -363,7 +363,6 @@ def test_production_is_blocked_if_a_memory_backed_action_is_production_enabled(m
 
 def test_the_real_registry_currently_passes_the_action_check(monkeypatch):
     monkeypatch.setattr(retention, "is_enforced", lambda: True)
-    monkeypatch.setattr(enforcement, "abuse_protection_enforced", lambda: True)
     assert production_blockers() == []
 
 
@@ -427,7 +426,7 @@ def globex_client(pg_db, pg_conn) -> TestClient:
         )
         s.commit()
     registry = Registry({"acme": demo_tenant(), "globex": demo_tenant()})
-    return TestClient(create_app(Settings(env="test"), registry, database=pg_db), base_url=BASE)
+    return TestClient(make_app(Settings(env="test"), registry, database=pg_db), base_url=BASE)
 
 
 def test_a_tenant_never_sees_another_tenants_events_or_global_events(globex_client):

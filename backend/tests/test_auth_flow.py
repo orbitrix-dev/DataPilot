@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.security import parse_keyring, token_digest
-from app.main import create_app
 from app.modules.audit.models import AuditEventRecord
 from app.modules.auth import service as auth_service
 from app.modules.auth.router import CSRF_COOKIE, CSRF_HEADER, REFRESH_COOKIE
@@ -34,7 +33,7 @@ from app.seed import _audit, demo_registry, demo_tenant
 from app.seed_postgres import seed_demo
 from app.tenant_data import Registry
 
-from .conftest import TEST_JWT_KID
+from .conftest import TEST_JWT_KID, make_app
 from .factories import DEMO_MATRIX, remove_demo
 
 BASE = "https://testserver/api/v1"
@@ -50,7 +49,7 @@ def db(conn) -> Session:
 
 
 def browser(pg_db, settings: Settings | None = None, registry: Registry | None = None) -> TestClient:
-    app = create_app(settings or Settings(env="test"), registry or demo_registry(), database=pg_db)
+    app = make_app(settings or Settings(env="test"), registry or demo_registry(), database=pg_db)
     return TestClient(app, base_url=BASE)
 
 
@@ -573,7 +572,7 @@ def test_refresh_without_a_cookie_or_with_an_unknown_or_expired_token(web, pg_db
     assert session_of(pg_conn, access).revoked_at is None  # an expired or unknown token is not replay
 
 
-def test_concurrent_refreshes_cannot_fork_the_family(migrated, owner_database):
+def test_concurrent_refreshes_cannot_fork_the_family(migrated, owner_database, throttle):
     """Two committed refreshes of the same token race: one rotates, the other is treated as replay. The family never
     has two live tokens. (A double refresh from two tabs therefore signs the user out: the safe failure.)"""
     settings = Settings(env="test")
@@ -587,7 +586,14 @@ def test_concurrent_refreshes_cannot_fork_the_family(migrated, owner_database):
             auth_service.accept_invitation(s, settings, token=token, password=PASSWORD)
         with migrated.session() as s:
             issued = auth_service.login(
-                s, settings, email=email, password=PASSWORD, tenant_slug=None, client="", user_agent=""
+                s,
+                settings,
+                email=email,
+                password=PASSWORD,
+                tenant_slug=None,
+                client="",
+                user_agent="",
+                throttle=throttle,
             )
         barrier, results = threading.Barrier(2), []
 

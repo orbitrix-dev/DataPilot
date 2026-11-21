@@ -23,6 +23,7 @@ Client address: ``app/core/client_address.py`` (X-Forwarded-For only from ``DP_T
 Authorization follows the tenant's live permission matrix (Admin → Permissions).
 """
 
+import contextlib
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import timedelta
@@ -41,6 +42,7 @@ from app.core.security import Keyring, api_key_digest
 from app.modules.audit.repository import PostgresAuditRepository
 from app.modules.auth import security_events
 from app.modules.auth import service as auth_service
+from app.modules.auth.throttle import ThrottleUnavailable, address_subject
 from app.modules.tenants import service as tenants
 from app.modules.tenants.models import ApiKey, Tenant
 from app.modules.tenants.pg_tables import PostgresTenantsRepository
@@ -143,6 +145,12 @@ def get_ctx(
         writer = security_events.writer_for(request)
 
         def on_reject(key: ApiKey | None, tenant: Tenant | None) -> None:
+            # Counted against the address (valid keys never are). Over the limit: 429 instead of 401. If the limiter
+            # is unavailable the key is still refused (401): there is nothing to fail open to.
+            limiter = getattr(request.app.state, "rate_limiter", None)
+            if limiter is not None:
+                with contextlib.suppress(ThrottleUnavailable):
+                    limiter.enforce("api_key_ip", address_subject(ip), client=ip)
             security_events.record_rejection(
                 writer,
                 "api-key.rejected",

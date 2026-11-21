@@ -4,6 +4,7 @@ uv run python -m app.cli seed-demo            # load the demo tenant into Postgr
 uv run python -m app.cli check-db-privileges  # verify the runtime user's effective privileges (exit 1 on problems)
 uv run python -m app.cli invite-user --tenant acme --email someone@acme.io --role analyst
                                               # issue a single-use invitation; prints the token ONCE
+uv run python -m app.cli purge-auth-throttle  # delete stale abuse-protection counters (as the OWNER; schedule daily)
 """
 
 import argparse
@@ -95,6 +96,49 @@ def invite_user(settings: Settings, args: argparse.Namespace) -> int:
     return 0
 
 
+PURGE_BATCH = 10_000
+
+
+def purge_auth_throttle(settings: Settings, args: argparse.Namespace) -> int:
+    """Deletes counters untouched for longer than the progressive-block memory (default) and not currently blocking.
+    Runs as the OWNER (DP_MIGRATION_DATABASE_URL): the runtime user has no DELETE on the table, by design. In batches,
+    so it never holds long locks. Schedule it (e.g. daily); the table otherwise grows with distinct subjects."""
+    from sqlalchemy import text
+
+    if settings.migration_database_url is None:
+        print("DP_MIGRATION_DATABASE_URL (the owner) is not set.", file=sys.stderr)
+        return 2
+    hours = args.older_than_hours or settings.throttle_block_memory_hours
+    if hours < 1:
+        print("--older-than-hours must be at least 1.", file=sys.stderr)
+        return 2
+    database = Database(settings.migration_database_url.get_secret_value())
+    deleted = 0
+    try:
+        while True:
+            with database.session() as session:
+                batch = session.execute(
+                    text(
+                        """
+                        DELETE FROM auth_throttle_buckets WHERE id IN (
+                            SELECT id FROM auth_throttle_buckets
+                             WHERE updated_at < now() - make_interval(hours => :hours)
+                               AND (blocked_until IS NULL OR blocked_until < now())
+                             ORDER BY updated_at
+                             LIMIT :batch)
+                        """
+                    ),
+                    {"hours": hours, "batch": PURGE_BATCH},
+                ).rowcount
+            deleted += batch
+            if batch < PURGE_BATCH:
+                break
+    finally:
+        database.dispose()
+    print(f"Deleted {deleted} abuse-protection counters untouched for more than {hours} h.")
+    return 0
+
+
 def main(argv: list[str] | None = None, settings: Settings | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.cli", description="DataPilot operational commands")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -107,6 +151,8 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
     invite.add_argument("--name", help="full name for a new user (defaults to one derived from the email)")
     invite.add_argument("--title", help="job title shown in Admin → Users")
     invite.add_argument("--issued-by", help="operator name, recorded in the audit event")
+    purge = commands.add_parser("purge-auth-throttle", help="Delete stale abuse-protection counters (owner)")
+    purge.add_argument("--older-than-hours", type=int, help="default: DP_THROTTLE_BLOCK_MEMORY_HOURS (24)")
     args = parser.parse_args(argv)
     if args.command == "seed-demo":
         return seed_demo(settings or Settings())
@@ -114,6 +160,8 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
         return check_db_privileges(settings or Settings())
     if args.command == "invite-user":
         return invite_user(settings or Settings(), args)
+    if args.command == "purge-auth-throttle":
+        return purge_auth_throttle(settings or Settings(), args)
     return 1  # unreachable: argparse rejects unknown commands
 
 

@@ -40,7 +40,7 @@ from app.seed import _members, demo_registry, demo_tenant
 from app.seed_postgres import seed_demo
 from app.tenant_data import Registry
 
-from .conftest import as_user, audit_events, mfa_code
+from .conftest import as_user, audit_events, make_app, mfa_code
 from .factories import DEMO_MATRIX, SOON, digest, remove_demo
 
 BASE = "http://testserver/api/v1"
@@ -273,7 +273,7 @@ def test_only_active_memberships_of_active_users_authenticate(client, pg_conn, c
 def test_a_tenant_without_in_memory_module_data_fails_closed(pg_db, pg_conn):
     with db(pg_conn) as s:
         PostgresTenantRepository(s).create("initech", "Initech")
-    app = create_app(Settings(env="test"), demo_registry(), database=pg_db)  # registry has only "acme"
+    app = make_app(Settings(env="test"), demo_registry(), database=pg_db)  # registry has only "acme"
     r = TestClient(app, base_url=BASE).get("/me", headers={"X-DataPilot-Tenant": "initech"})
     assert r.status_code == 401 and r.json()["error"]["message"] == "Unknown tenant 'initech'"
 
@@ -311,7 +311,7 @@ def globex(pg_conn) -> dict:
 @pytest.fixture
 def two_tenant_client(pg_db, globex) -> TestClient:
     registry = Registry({"acme": demo_tenant(), "globex": demo_tenant()})
-    return TestClient(create_app(Settings(env="test"), registry, database=pg_db), base_url=BASE)
+    return TestClient(make_app(Settings(env="test"), registry, database=pg_db), base_url=BASE)
 
 
 def test_each_tenant_sees_only_its_own_members_and_sessions(two_tenant_client):
@@ -367,7 +367,7 @@ def test_inviting_someone_who_belongs_to_another_tenant_reuses_their_identity(tw
 
 
 def test_a_domain_error_rolls_back_writes_and_their_audit_events(registry, pg_db, pg_conn):
-    app = create_app(Settings(env="test"), registry, database=pg_db)
+    app = make_app(Settings(env="test"), registry, database=pg_db)
 
     @app.post("/api/v1/_probe/invite-then-fail")
     def invite_then_fail(ctx: Ctx) -> None:
