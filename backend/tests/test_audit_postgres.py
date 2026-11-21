@@ -82,8 +82,39 @@ def test_all_18_audit_call_sites_use_registered_action_codes():
     assert unregistered == []
 
 
+def _record_event_actions() -> list[tuple[str, str]]:
+    """Actions recorded with audit.service.record_event (flows without a request context: invitations, sign-in)."""
+    found = []
+    for path in sorted((BACKEND_DIR / "app" / "modules").rglob("service.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "record_event":
+                arg = node.args[1]
+                assert isinstance(arg, ast.Constant), f"{path}: record_event action must be a literal code"
+                found.append((str(path.relative_to(BACKEND_DIR)), arg.value))
+    return found
+
+
+def test_record_event_call_sites_use_registered_action_codes():
+    sites = _record_event_actions()
+    assert sorted(a for _, a in sites) == sorted(
+        [
+            "user.invitation_issued",
+            "user.invitation_accepted",
+            "login.succeeded",
+            "login.refresh_reuse_detected",
+            "login.logout",
+        ]
+    )
+    assert all(a in ACTIONS for _, a in sites)
+
+
 def test_every_registered_action_is_used_by_a_call_site_the_demo_history_or_the_security_writer():
-    used = {a for _, a in _call_site_actions()} | set(DEMO_AUDIT_ACTIONS.values()) | {"api-key.rejected"}
+    used = (
+        {a for _, a in _call_site_actions()}
+        | {a for _, a in _record_event_actions()}
+        | set(DEMO_AUDIT_ACTIONS.values())
+        | {"api-key.rejected"}
+    )
     assert used == set(ACTIONS)
 
 

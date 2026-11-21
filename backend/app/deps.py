@@ -3,9 +3,12 @@
 Identity:
 - ``Authorization: Bearer dp_live_…`` authenticates an API key (read-only, scope-checked): an indexed lookup of its
   HMAC digest in PostgreSQL; revoked, expired and unknown keys all get the same 401.
-- In dev/test only, ``X-DataPilot-Tenant`` / ``X-DataPilot-User`` pick a member (defaults: acme / u-elena). This is a
-  development adapter, now resolved against PostgreSQL. Production has no user sign-in yet, so every
-  non-API-key request is rejected outside dev.
+- ``Authorization: Bearer <access token>`` authenticates a signed-in user: the JWT is verified (signature, kid,
+  issuer, audience, expiry) and the session it names is re-checked in PostgreSQL on every request (not revoked, not
+  expired, not idle beyond the tenant's timeout; membership, user and tenant still active). See app/modules/auth.
+- In dev/test only, and only when no Authorization header is sent, ``X-DataPilot-Tenant`` / ``X-DataPilot-User`` pick
+  a member (defaults: acme / u-elena): a development adapter resolved against PostgreSQL. Production requires one of
+  the two credentials above.
 
 Resolution order: tenant first (unknown or deleted → 401, suspended → 403), then the membership (only an active
 membership of an active user is accepted; anything else → 401 "Unknown or inactive user").
@@ -35,6 +38,7 @@ from app.core.db import DbSession
 from app.core.errors import Forbidden, ServiceUnavailable, Unauthorized
 from app.core.security import Keyring, api_key_digest
 from app.modules.audit.repository import PostgresAuditRepository
+from app.modules.auth import service as auth_service
 from app.modules.tenants import service as tenants
 from app.modules.tenants.models import ApiKey, Tenant
 from app.modules.tenants.pg_tables import PostgresTenantsRepository
@@ -141,8 +145,32 @@ def get_ctx(
             api_key_keyring=keyring,
         )
 
+    if authorization:
+        # A session access token (JWT). With an Authorization header present, dev headers are never consulted.
+        if not authorization.startswith("Bearer "):
+            raise Unauthorized("Unsupported authorization scheme")
+        authenticated = auth_service.authenticate_access_token(
+            db, settings, authorization.removeprefix("Bearer "), client=ip
+        )
+        tenant = authenticated.tenant
+        principal = Principal(
+            kind="user",
+            id=authenticated.user.public_id,
+            name=authenticated.user.full_name,
+            role=authenticated.role_key,
+        )
+        return RequestContext(
+            tenant_id=tenant.slug,
+            principal=principal,
+            data=_request_data(db, registry, tenant.slug, tenant),
+            ip=ip,
+            tenant_uuid=tenant.id,
+            environment=settings.env,
+            api_key_keyring=keyring,
+        )
+
     if not settings.dev_auth_enabled:
-        raise Unauthorized("Sign-in is not available yet: only API keys are accepted outside dev")
+        raise Unauthorized("Authentication required")
 
     slug = x_datapilot_tenant or settings.default_dev_tenant
     tenant = _resolve_tenant(db, slug)  # tenant status is checked before any membership lookup
