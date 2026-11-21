@@ -20,7 +20,7 @@ docker compose up -d --wait postgres     # PostgreSQL 18 on 127.0.0.1:5432; retu
 cd backend
 uv sync --locked                         # creates .venv with exactly the versions in uv.lock
 uv run alembic upgrade head              # creates/updates the schema (tenants, users, roles, permissions, …)
-uv run python -m app.cli seed-demo       # optional: loads the demo tenant into PostgreSQL (idempotent)
+uv run python -m app.cli seed-demo       # loads the demo tenant into PostgreSQL (idempotent); the API needs it
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
@@ -79,7 +79,7 @@ def create_thing(body: ThingIn, db: DbSession) -> ThingOut:
 - Connection failures and timeouts become `503 {"error": {"code": "service_unavailable", …}}`, with details logged but never returned.
 - Scripts and workers use `with database.session() as s: ...` for the same commit/rollback behaviour.
 
-The core schema (tenants, users, memberships, roles, permissions, sessions) and its PostgreSQL repositories exist, but **the API doesn't use them yet**. Every route still serves the in-memory demo, with unchanged IDs and responses. Schema, permission mapping, tenant isolation and seed details are in [docs/DATABASE.md](../docs/DATABASE.md).
+**The Tenants module runs on PostgreSQL** (members, sessions, workspace settings, permission matrix), and so does request authentication. API keys, Connect, Trust, Automate, Billing, Notifications and the audit log are still in memory. IDs and responses are unchanged. Audit events are published only after the request's transaction commits. Schema, identifier mapping, request flow, tenant isolation and seed details are in [docs/DATABASE.md](../docs/DATABASE.md).
 
 ### Demo data in PostgreSQL
 
@@ -89,7 +89,7 @@ The core schema (tenants, users, memberships, roles, permissions, sessions) and 
 - It creates **no passwords and no sessions**.
 - It refuses to run when `DP_ENV=prod`.
 
-Run `alembic upgrade head` first. The API keeps serving its own in-memory copy of the same data until it's switched to PostgreSQL.
+Run `alembic upgrade head` first. **The API needs this data:** until it's seeded, dev requests get `401 Unknown tenant 'acme'`. Demo sessions hold digests of discarded random tokens and can never authenticate.
 
 ### Migrations (Alembic)
 
@@ -134,6 +134,7 @@ How migrations run:
 | Tests fail with `DP_TEST_DATABASE_URL is not set` / `Test database is unreachable` | Add `DP_TEST_DATABASE_URL` to `.env` (see `.env.example`) and make sure the container is up: `docker compose ps` should show `healthy`. |
 | `/healthz/db` returns `{"database": "not_configured"}` | `DP_DATABASE_URL` is empty or missing in `.env`. |
 | `uv sync --locked` fails with `The lockfile needs to be updated` | `pyproject.toml` changed without updating `uv.lock`. Run `uv lock`, review the diff, and commit both. |
+| Every request returns `401 Unknown tenant 'acme'` | The database has no demo tenant. Run `uv run alembic upgrade head` and `uv run python -m app.cli seed-demo`. |
 | `Can't locate revision identified by '…'` | The database was migrated from another branch whose migration files aren't in your checkout. Switch back and `alembic downgrade base`, or, for disposable dev data, `docker compose down -v`. |
 | A migration fails with `canceling statement due to lock timeout` | Another transaction holds a lock on the table. Retry when it finishes, or raise `DP_DB_MIGRATION_LOCK_TIMEOUT_MS` for that run. |
 
@@ -173,12 +174,13 @@ app/
     service.py       business rules; writes audit events
     router.py        HTTP routes and their permission requirements
     models.py        ORM models (tenants, identity)
-    persistence.py   PostgreSQL repositories (tenants, identity), not yet used by the API
+    persistence.py   PostgreSQL repositories (tenants, identity)
+  modules/tenants/pg_tables.py     the Tenants service's Table interface on PostgreSQL (members, sessions, workspace)
   modules/tenants/permissions.py   permission catalog + deterministic level ↔ permission-set mapping
   seed_postgres.py   demo tenant for PostgreSQL;  cli.py: `python -m app.cli seed-demo`
 migrations/
   env.py             Alembic environment (URL from DP_* settings, one transaction, lock_timeout)
-  versions/          migration scripts (0001_core_schema.py)
+  versions/          migration scripts (0001_core_schema.py, 0002_tenants_persistence.py)
 alembic.ini          Alembic configuration (no credentials)
 ```
 

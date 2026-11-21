@@ -28,7 +28,16 @@ from app.core import clock
 from app.core.errors import Conflict, NotFound
 from app.db.integrity import translate_integrity_errors
 
-from .models import MEMBERSHIP_STATUSES, SLUG_PATTERN, Permission, Role, RolePermission, Tenant, TenantMembership
+from .models import (
+    MEMBERSHIP_STATUSES,
+    SLUG_PATTERN,
+    Permission,
+    Role,
+    RolePermission,
+    Tenant,
+    TenantMembership,
+    TenantSettings,
+)
 from .permissions import (
     CATALOG_CODES,
     UnsupportedPermissionSet,
@@ -40,11 +49,22 @@ from .schemas import ROLE_IDS, ROLES, Matrix
 
 _SLUG = re.compile(SLUG_PATTERN)
 
+# Settings for a tenant created without explicit values (and the values migration 0002 backfilled for tenants that
+# existed before tenant_settings). Every value passes the API's validation (OrgSettings / SecurityPolicy).
+DEFAULT_SETTINGS = {
+    "industry": "Wholesale & Distribution",  # DataPilot's initial market: Indian distributors and wholesalers
+    "timezone": "UTC",
+    "audit_retention_days": 365,
+    "require_mfa": False,
+    "enforce_sso": False,
+    "session_timeout_hours": 12,
+}
+
 # ====================================================================== interfaces
 
 
 class TenantRepository(Protocol):
-    def create(self, slug: str, name: str) -> Tenant: ...
+    def create(self, slug: str, name: str, *, settings: dict | None = None) -> Tenant: ...
     def get(self, tenant_id: uuid.UUID) -> Tenant: ...
     def find_by_slug(self, slug: str) -> Tenant | None: ...
 
@@ -87,12 +107,15 @@ class PostgresTenantRepository:
     def __init__(self, session: Session) -> None:
         self._s = session
 
-    def create(self, slug: str, name: str) -> Tenant:
+    def create(self, slug: str, name: str, *, settings: dict | None = None) -> Tenant:
+        """Creates the tenant and its settings row (every tenant has exactly one)."""
         if not _SLUG.match(slug):
             raise ValueError(f"Invalid tenant slug {slug!r}")
         tenant = Tenant(slug=slug, name=name.strip())
         with translate_integrity_errors(self._s, unique=lambda: Conflict(f"The slug {slug!r} is already taken")):
             self._s.add(tenant)
+        self._s.add(TenantSettings(tenant_id=tenant.id, **{**DEFAULT_SETTINGS, **(settings or {})}))
+        self._s.flush()
         self._s.refresh(tenant)  # server defaults (status, timestamps)
         return tenant
 

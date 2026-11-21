@@ -5,6 +5,7 @@ Models live in their modules (``app/modules/<module>/models.py``); ``app/db/mode
 """
 
 import os
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -23,21 +24,31 @@ NAMING_CONVENTION = {
 }
 
 
-def uuid7() -> uuid.UUID:
-    """RFC 9562 UUIDv7: 48-bit Unix milliseconds, then 74 random bits.
+_uuid7_lock = threading.Lock()
+_uuid7_last = (0, 0)  # (milliseconds, 12-bit counter) of the previous id
 
-    Time-ordered, so primary-key indexes stay compact and inserts stay local. The creation time is readable
-    from the id, so ids are never secrets.
+
+def uuid7() -> uuid.UUID:
+    """RFC 9562 UUIDv7: 48-bit Unix milliseconds, a 12-bit counter, then 62 random bits.
+
+    Time-ordered, so primary-key indexes stay compact and inserts stay local. Monotonic within the process
+    (RFC 9562 §6.2, method 1): ids generated in the same millisecond increment the counter, so ordering by id
+    reproduces creation order. Member listings rely on this. The creation time is readable from the id, so
+    ids are never secrets.
     """
-    ms = time.time_ns() // 1_000_000
-    rand = int.from_bytes(os.urandom(10), "big")  # 80 bits; 74 are used
-    value = (
-        (ms & 0xFFFF_FFFF_FFFF) << 80
-        | 0x7 << 76  # version
-        | (rand >> 68) << 64  # rand_a: 12 bits
-        | 0b10 << 62  # RFC 9562 variant
-        | rand & ((1 << 62) - 1)  # rand_b: 62 bits
-    )
+    global _uuid7_last
+    with _uuid7_lock:
+        ms = time.time_ns() // 1_000_000
+        last_ms, last_counter = _uuid7_last
+        if ms > last_ms:
+            counter = int.from_bytes(os.urandom(2), "big") & 0x7FF  # random start, leaving headroom
+        else:
+            ms, counter = last_ms, last_counter + 1
+            if counter > 0xFFF:  # counter exhausted within one millisecond: borrow the next one
+                ms, counter = last_ms + 1, 0
+        _uuid7_last = (ms, counter)
+    rand_b = int.from_bytes(os.urandom(8), "big") & ((1 << 62) - 1)
+    value = (ms & 0xFFFF_FFFF_FFFF) << 80 | 0x7 << 76 | counter << 64 | 0b10 << 62 | rand_b
     return uuid.UUID(int=value)
 
 
