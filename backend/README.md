@@ -4,9 +4,11 @@ The FastAPI application backend from [docs/ARCHITECTURE.md](../docs/ARCHITECTURE
 
 ## Run it
 
-Needs [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 for you).
+Needs [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 for you) and Docker (for PostgreSQL).
 
 ```bash
+cp .env.example .env                      # at the repo root; change POSTGRES_PASSWORD and both DP_*_URLs to match
+docker compose up -d --wait postgres      # PostgreSQL 18 on 127.0.0.1:5432, data in the datapilot-pgdata volume
 cd backend
 uv sync                                   # create .venv and install
 uv run uvicorn app.main:app --reload --port 8000
@@ -14,15 +16,39 @@ uv run uvicorn app.main:app --reload --port 8000
 
 - API: `http://localhost:8000/api/v1`
 - Interactive docs: `http://localhost:8000/api/v1/docs`
-- Health: `http://localhost:8000/healthz`
+- Liveness: `http://localhost:8000/healthz` (never touches the database)
+- Database readiness: `http://localhost:8000/healthz/db` (`200` with latency, or `503` with `not_configured` / `unreachable`)
 
 ```bash
-uv run pytest        # tests
+uv run pytest        # tests (need the postgres container running)
 uv run ruff check .  # lint
 uv run ruff format . # format
 ```
 
-Configuration is read from `DP_*` environment variables or `backend/.env` (see `app/core/config.py`): `DP_ENV` (`dev` | `test` | `prod`), `DP_CORS_ORIGINS`, `DP_API_PREFIX`.
+### Configuration
+
+Read from `DP_*` environment variables, then the repo-root `.env` (shared with Docker Compose), then `backend/.env`. See `.env.example` for every variable. `.env` files are git-ignored; never commit real credentials.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DP_ENV` | `dev` | `dev` \| `test` \| `prod` |
+| `DP_DATABASE_URL` | none | `postgresql+psycopg://user:pass@host:5432/db`. **Required in prod.** Never printed: it's a `SecretStr` |
+| `DP_DB_POOL_SIZE` / `DP_DB_MAX_OVERFLOW` | `5` / `10` | Per process. Keep `pool_size + max_overflow` × processes under the server's `max_connections` |
+| `DP_DB_POOL_TIMEOUT_SECONDS` | `10` | Wait for a free pooled connection before failing with 503 |
+| `DP_DB_POOL_RECYCLE_SECONDS` | `1800` | Replace connections older than this |
+| `DP_DB_CONNECT_TIMEOUT_SECONDS` | `5` | |
+| `DP_DB_STATEMENT_TIMEOUT_MS` | `15000` | Server-side cap per statement; `0` disables |
+| `DP_CORS_ORIGINS`, `DP_API_PREFIX` | | |
+
+### Database and transactions
+
+`app/core/db.py` owns the engine (one connection pool per process, `pool_pre_ping` on) and gives each request one transaction through the `DbSession` dependency. **The transaction commits when the route returns, before the response is sent, and rolls back on any exception, including `DomainError`s.** A client is never told a write succeeded when its commit failed. Connection failures and timeouts become `503 {"error": {"code": "service_unavailable", …}}`, with details logged but never returned.
+
+### Tests and the test database
+
+Tests use a separate database, `DP_TEST_DATABASE_URL` (`datapilot_test`, created by `docker/postgres/initdb` the first time the container starts). The suite refuses any database whose name doesn't end in `_test`. While it runs, it points `DP_DATABASE_URL` at the test database, so a test can never reach your development data. If the test database isn't configured or reachable, the database tests **fail** with instructions rather than being skipped.
+
+The init script only runs on an empty volume. If you created the volume before this script existed, create the test database once with `docker compose exec postgres sh -c 'createdb -U "$POSTGRES_USER" "$POSTGRES_TEST_DB"'`. `docker compose down -v` deletes all local database data.
 
 ## Calling it
 
