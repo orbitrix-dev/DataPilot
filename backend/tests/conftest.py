@@ -1,11 +1,14 @@
 import os
+from collections.abc import Iterator
 from urllib.parse import urlsplit
 
 import pytest
+from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.orm import Session
 
 from app.core.config import BACKEND_DIR, Settings
 from app.core.db import Database
@@ -59,6 +62,30 @@ def database() -> Database:
         pytest.fail(f"Test database is unreachable ({type(exc).__name__}). Is `docker compose up -d postgres` running?")
     yield db
     db.dispose()
+
+
+@pytest.fixture(scope="session")
+def migrated(database) -> Database:
+    """The test database rebuilt from empty by Alembic once per run (downgrade base, then upgrade head)."""
+    cfg = alembic_config()
+    command.downgrade(cfg, "base")
+    command.upgrade(cfg, "head")
+    return database
+
+
+@pytest.fixture
+def db_session(migrated) -> Iterator[Session]:
+    """A session whose work is rolled back after the test. Code under test may still use savepoints and flush;
+    nothing it does is ever committed, so tests can't see each other's rows."""
+    conn = migrated.engine.connect()
+    outer = conn.begin()
+    session = Session(bind=conn, join_transaction_mode="create_savepoint")
+    try:
+        yield session
+    finally:
+        session.close()
+        outer.rollback()
+        conn.close()
 
 
 @pytest.fixture
