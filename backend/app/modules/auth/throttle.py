@@ -32,13 +32,19 @@ IPv6 addresses are keyed by their /64 (one subscriber's allocation), so rotating
 
 **Identifiers are never stored in clear.** ``subject_hash = HMAC-SHA256(key[version], "datapilot/throttle/v1" ‖
 scope ‖ identifier)``, under ``DP_THROTTLE_KEYS`` (separate from every other secret). During key rotation the row
-under an older version is re-keyed to the active version on first use, so rotation doesn't reset anyone's counters.
+under another listed version is re-keyed to the active version on first use, so rotation doesn't reset anyone's
+counters. While more than one version is listed, every operation on a subject first takes a transaction-scoped
+advisory lock derived from the subject's HMAC under the lowest-named version (known to every instance that lists the
+same versions). That serializes re-keying with consumption across instances, including instances whose *active*
+versions differ during a rolling switch, so a counter can never split into two rows. With one version (normal
+operation) no extra lock is taken.
 
 **Failure policy: fail closed, bounded.** If the limiter's database is unreachable or slow (2 s connect and statement
 timeouts, a 3-connection pool with a 1 s wait), ``enforce`` raises ``ThrottleUnavailable`` (503): sign-in, enrolment
-and MFA verification are refused rather than run unthrottled. For ``failure_cooldown`` seconds after a failure every
-call is refused immediately without touching the database, so an outage doesn't turn the sign-in endpoint into a
-stream of connection attempts. Invalid API keys stay 401 during an outage (they are rejected anyway).
+and MFA verification are refused rather than run unthrottled, and an *invalid* API key is answered 503 rather than
+401 (it could not be counted, so it is neither counted nor recorded). Valid API keys never consult the limiter and
+keep working. For ``failure_cooldown`` seconds after a failure every call is refused immediately without touching the
+database, so an outage doesn't turn an endpoint into a stream of connection attempts.
 
 **Audit, bounded.** One ``login.throttled`` / ``api-key.throttled`` security event when a subject *becomes* blocked
 (the first refusal of a window or block), never one per refused request.
@@ -93,6 +99,7 @@ class Decision:
     allowed: bool
     retry_after: int = 0  # seconds, when refused
     newly_blocked: bool = False  # this attempt is the one that started the refusal (audit once)
+    attempts: int = 0  # the window's count after this attempt (diagnostics and tests; never returned to clients)
 
 
 def policies(settings: Settings) -> dict[str, Policy]:
@@ -245,7 +252,7 @@ class AuthThrottle:
     def _run(self, work):
         with self._lock:
             if time.monotonic() < self._down_until:
-                raise ThrottleUnavailable("Sign-in is temporarily unavailable")
+                raise ThrottleUnavailable("Authentication is temporarily unavailable")
         try:
             with Session(self._engine) as session, session.begin():
                 return work(session)
@@ -257,7 +264,15 @@ class AuthThrottle:
                 self._down_until = time.monotonic() + self.cooldown
             if first:  # one log line per outage episode, not per request
                 log.error("Auth throttle unavailable (%s); refusing attempts", type(exc).__name__)
-            raise ThrottleUnavailable("Sign-in is temporarily unavailable") from None
+            raise ThrottleUnavailable("Authentication is temporarily unavailable") from None
+
+    def _serialize_during_rotation(self, session: Session, scope: str, identifier: str) -> None:
+        """While several key versions are listed, one advisory lock per subject (same id on every instance that lists
+        the same versions, whichever is active) makes re-key + upsert atomic across instances."""
+        if len(self.keyring.keys) < 2:
+            return
+        anchor = self._digest(min(self.keyring.keys), scope, identifier)
+        session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": int.from_bytes(anchor[:8], "big", signed=True)})
 
     def _rekey(self, session: Session, scope: str, identifier: str, subject: bytes) -> None:
         old = [self._digest(v, scope, identifier) for v in self.keyring.keys if v != self.keyring.active]
@@ -279,6 +294,7 @@ class AuthThrottle:
         subject = self.subject_hash(scope, identifier)
 
         def work(session: Session) -> Decision:
+            self._serialize_during_rotation(session, scope, identifier)
             now = at or session.execute(text("SELECT statement_timestamp()")).scalar_one()
             self._rekey(session, scope, identifier, subject)
             row = session.execute(
@@ -293,13 +309,16 @@ class AuthThrottle:
                     "memory": self.block_memory_hours,
                 },
             ).one()
+            count = row.attempt_count
             if row.blocked_until is not None and row.blocked_until > now:
-                return Decision(False, _seconds(row.blocked_until - now))
-            if row.attempt_count <= policy.limit:
-                return Decision(True)
+                return Decision(False, _seconds(row.blocked_until - now), attempts=count)
+            if count <= policy.limit:
+                return Decision(True, attempts=count)
             if not policy.progressive:
                 window_end = row.window_start + timedelta(seconds=self.window)
-                return Decision(False, _seconds(window_end - now), newly_blocked=row.attempt_count == policy.limit + 1)
+                return Decision(
+                    False, _seconds(window_end - now), newly_blocked=count == policy.limit + 1, attempts=count
+                )
             level = min(row.block_level + 1, 30)
             duration = min(self.block_max, self.block_base * 2 ** (level - 1))
             session.execute(
@@ -312,7 +331,7 @@ class AuthThrottle:
                     "subject": subject,
                 },
             )
-            return Decision(False, duration, newly_blocked=True)
+            return Decision(False, duration, newly_blocked=True, attempts=count)
 
         return self._run(work)
 
@@ -321,6 +340,7 @@ class AuthThrottle:
         subject = self.subject_hash(scope, identifier)
 
         def work(session: Session) -> None:
+            self._serialize_during_rotation(session, scope, identifier)
             now = at or session.execute(text("SELECT statement_timestamp()")).scalar_one()
             self._rekey(session, scope, identifier, subject)
             session.execute(_RESET, {"now": now, "scope": scope, "subject": subject})

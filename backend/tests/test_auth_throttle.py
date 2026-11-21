@@ -32,8 +32,10 @@ from app.modules.auth.throttle import (
 from app.modules.identity.models import MfaTotpFactor, User
 from app.modules.tenants.models import TenantSettings
 from app.seed import demo_registry
+from app.seed_postgres import seed_demo
 
 from .conftest import TEST_DATABASE_URL, RecordingSecurityAudit, make_app, mfa_code
+from .factories import remove_demo
 
 BASE = "https://testserver/api/v1"
 ORIGIN = {"Origin": "http://localhost:5173"}
@@ -419,12 +421,18 @@ def test_revoked_keys_count_as_invalid(client, throttle):
     assert statuses == [401] * 30 + [429]
 
 
-def test_api_key_throttling_is_audited_once(client, throttle, security_audit):
+def test_api_key_throttling_is_audited_once_and_blocked_attempts_write_no_rejections(client, throttle, security_audit):
     bot = TestClient(client.app, base_url="http://testserver/api/v1", client=("203.0.113.52", 1))
-    for _ in range(35):
-        bot.get("/trust/incidents", headers={"Authorization": "Bearer dp_live_nope"})
-    actions = [e["action"] for e in security_audit.events]
-    assert actions.count("api-key.rejected") == 30 and actions.count("api-key.throttled") == 1
+    for _ in range(30):
+        assert bot.get("/trust/incidents", headers={"Authorization": "Bearer dp_live_nope"}).status_code == 401
+    assert [e["action"] for e in security_audit.events] == ["api-key.rejected"] * 30
+    for _ in range(25):  # the address is blocked from here on
+        assert bot.get("/trust/incidents", headers={"Authorization": "Bearer dp_live_nope"}).status_code == 429
+    after = [e["action"] for e in security_audit.events[30:]]
+    assert after == ["api-key.throttled"]  # one event for the block, no per-attempt rejections
+    [throttled] = security_audit.events[30:]
+    assert set(throttled["metadata"]) == {"scope", "retry_after_seconds"}
+    assert throttled["metadata"]["scope"] == "api_key_ip" and throttled["metadata"]["retry_after_seconds"] > 0
     assert "dp_live_nope" not in str(security_audit.events)
 
 
@@ -448,13 +456,33 @@ def test_without_a_limiter_sign_in_is_refused(pg_db, pg_conn):
     assert _login(TestClient(app, base_url=BASE)).status_code == 503
 
 
-def test_invalid_keys_stay_refused_and_valid_keys_work_when_the_limiter_is_down(client, pg_db, make_limiter):
+def test_api_key_outage_policy_is_explicit_503_without_per_request_events(client, pg_db, make_limiter):
+    """Limiter down: an invalid key can't be counted, so it gets 503 (not an ordinary 401) and no api-key.rejected
+    event per request (an unbounded write path); valid keys never consult the limiter and keep working."""
     secret = client.post(
         "/api-keys", json={"name": "R", "scopes": ["trust:read"], "mfa_code": mfa_code(client)}
     ).json()["secret"]
-    app = make_app(Settings(env="test"), demo_registry(), database=pg_db, rate_limiter=make_limiter(url=DEAD_DB))
+    audit = RecordingSecurityAudit()
+    down = make_limiter(url=DEAD_DB)
+    app = make_app(Settings(env="test"), demo_registry(), database=pg_db, rate_limiter=down, security_audit=audit)
     http = TestClient(app, base_url="http://testserver/api/v1")
-    assert http.get("/trust/incidents", headers={"Authorization": "Bearer dp_live_nope"}).status_code == 401
+    for _ in range(10):
+        r = http.get("/trust/incidents", headers={"Authorization": "Bearer dp_live_nope"})
+        assert r.status_code == 503 and r.json()["error"] == {
+            "code": "service_unavailable",
+            "message": "Authentication is temporarily unavailable",
+        }
+    assert audit.events == []
+    assert http.get("/trust/incidents", headers={"Authorization": f"Bearer {secret}"}).status_code == 200
+
+
+def test_without_a_limiter_invalid_keys_get_503_and_valid_keys_work(client, pg_db):
+    secret = client.post(
+        "/api-keys", json={"name": "R", "scopes": ["trust:read"], "mfa_code": mfa_code(client)}
+    ).json()["secret"]
+    app = make_app(Settings(env="test"), demo_registry(), database=pg_db, rate_limiter=None)
+    http = TestClient(app, base_url="http://testserver/api/v1")
+    assert http.get("/trust/incidents", headers={"Authorization": "Bearer dp_live_nope"}).status_code == 503
     assert http.get("/trust/incidents", headers={"Authorization": f"Bearer {secret}"}).status_code == 200
 
 
@@ -503,3 +531,133 @@ def test_user_subjects_use_the_internal_id(pg_conn):
     with Session(bind=pg_conn) as s:
         user = s.scalar(select(User).where(User.public_id == "u-elena"))
         assert user_subject(user) == f"user:{user.id}"
+
+
+# ====================================================================== review: reset racing with failures (PostgreSQL)
+
+
+def _run_together(*callables) -> list:
+    barrier, results, lock = threading.Barrier(len(callables)), [None] * len(callables), threading.Lock()
+
+    def run(i: int) -> None:
+        barrier.wait()
+        try:
+            outcome = callables[i]()
+        except Exception as exc:  # noqa: BLE001
+            outcome = exc
+        with lock:
+            results[i] = outcome
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(len(callables))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return results
+
+
+@pytest.mark.parametrize("round_", range(5))
+def test_a_success_reset_racing_with_failures_never_admits_more_than_the_limit(make_limiter, round_):
+    """Account at 4 of 5 wrong passwords. One correct sign-in (consume, then reset) races twelve wrong ones across four
+    instances. Whatever the interleaving: at most 5 wrong attempts are admitted, every admitted attempt saw a distinct
+    count (no lost update), and the correct one is admitted only if it got there before the limit."""
+    instances = [make_limiter() for _ in range(4)]
+    subject = account_subject(f"race{round_}.{secrets.token_hex(3)}@acme.io")
+    assert allowed(instances[0], "login_account", subject, 4) == [True] * 4
+
+    def correct():
+        decision = instances[0].consume("login_account", subject)
+        if decision.allowed:
+            instances[0].reset("login_account", subject)
+        return ("correct", decision)
+
+    def wrong(i: int):
+        return lambda: ("wrong", instances[i % 4].consume("login_account", subject))
+
+    results = _run_together(correct, *[wrong(i) for i in range(12)])
+    assert not [r for r in results if isinstance(r, Exception)], results
+    correct_decision = next(d for kind, d in results if kind == "correct")
+    admitted_wrong = [d for kind, d in results if kind == "wrong" and d.allowed]
+    assert len(admitted_wrong) <= 5
+    counts = [d.attempts for d in admitted_wrong]
+    assert len(counts) == len(set(counts)) and all(1 <= c <= 5 for c in counts)  # serialized, no lost update
+    if correct_decision.allowed:
+        assert correct_decision.attempts == 5  # it came before the limit; its reset then started a fresh window
+    else:
+        assert len(admitted_wrong) == 1 and counts == [5]  # a wrong attempt used the last slot; correct was refused
+    # Afterwards the counter is consistent: within the limit, or blocked (never negative, never split).
+    after = instances[1].consume("login_account", subject)
+    assert after.attempts <= 6
+
+
+def test_correct_and_wrong_passwords_race_through_the_real_sign_in(migrated, owner_database, make_limiter):
+    """The same race through authenticate_password (real Argon2 checks, committed user, one limiter per thread)."""
+    settings = Settings(env="test")
+    email = "race.reset@acme.io"
+    try:
+        with migrated.session() as s:
+            seed_demo(s)
+            token = auth_service.issue_invitation(s, settings, tenant_slug="acme", email=email, role_key="viewer").token
+            auth_service.accept_invitation(s, settings, token=token, password=PASSWORD)
+        warmup = make_limiter()
+        assert allowed(warmup, "login_account", account_subject(email), 4) == [True] * 4
+
+        def attempt(password: str):
+            limiter = make_limiter()
+            with migrated.session() as s:
+                return auth_service.authenticate_password(
+                    s, email=email, password=password, throttle=limiter, client="198.51.100.77"
+                )
+
+        results = _run_together(lambda: attempt(PASSWORD), *[(lambda: attempt("wrong password!!")) for _ in range(5)])
+        correct, wrongs = results[0], results[1:]
+        assert all(type(r).__name__ in ("Unauthorized", "TooManyRequests") for r in wrongs), wrongs
+        admitted_wrong = sum(type(r).__name__ == "Unauthorized" for r in wrongs)
+        assert admitted_wrong <= 5
+        if isinstance(correct, User):
+            assert correct.email == email
+        else:
+            assert type(correct).__name__ == "TooManyRequests" and admitted_wrong == 1
+    finally:
+        with owner_database.session() as s:
+            remove_demo(s, extra_emails=(email,))
+
+
+# ====================================================================== review: concurrent re-keying (PostgreSQL)
+
+
+OLD_KEY = f"t1={'o' * 48}"
+NEW_KEY = f"t2={'n' * 48}"
+
+
+def _single_row(owner_database) -> AuthThrottleBucket:
+    stored = rows(owner_database)
+    assert len(stored) == 1, f"the counter split into {len(stored)} rows"
+    return stored[0]
+
+
+def test_concurrent_rekeying_and_consumption_keep_one_counter(make_limiter, owner_database):
+    """A counter at 10/20 under the old key; 40 attempts race on four instances that just made the new key active.
+    Exactly 10 more are admitted, and one row remains, under the new key."""
+    subject = address_subject("198.51.100.60")
+    assert allowed(make_limiter(keys=OLD_KEY, active="t1"), "login_ip", subject, 10) == [True] * 10
+    instances = [make_limiter(keys=f"{NEW_KEY},{OLD_KEY}", active="t2") for _ in range(4)]
+    results = _run_together(*[(lambda i=i: instances[i % 4].consume("login_ip", subject)) for i in range(40)])
+    assert sum(d.allowed for d in results) == 10
+    row = _single_row(owner_database)
+    assert row.key_version == "t2" and row.attempt_count == 10 + 40  # every attempt counted exactly once
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_instances_with_different_active_versions_never_split_a_counter(make_limiter, owner_database, existing):
+    """A rolling switch of the active version: half the instances still sign with t1, half already with t2 (both list
+    both). 40 concurrent attempts admit exactly the limit, and exactly one row remains."""
+    subject = account_subject(f"rolling.{secrets.token_hex(3)}@acme.io")
+    if existing:
+        make_limiter(keys=f"{OLD_KEY},{NEW_KEY}", active="t1").consume("login_ip", subject)
+    old_active = [make_limiter(keys=f"{OLD_KEY},{NEW_KEY}", active="t1") for _ in range(2)]
+    new_active = [make_limiter(keys=f"{NEW_KEY},{OLD_KEY}", active="t2") for _ in range(2)]
+    instances = old_active + new_active
+    results = _run_together(*[(lambda i=i: instances[i % 4].consume("login_ip", subject)) for i in range(40)])
+    assert sum(d.allowed for d in results) == 20 - (1 if existing else 0)
+    _single_row(owner_database)

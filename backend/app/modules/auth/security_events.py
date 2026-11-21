@@ -134,7 +134,7 @@ def throttle_for(request: Request):
 
     limiter = getattr(request.app.state, "rate_limiter", None)
     if limiter is None:
-        raise ThrottleUnavailable("Sign-in is temporarily unavailable")
+        raise ThrottleUnavailable("Authentication is temporarily unavailable")
     return limiter
 
 

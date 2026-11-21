@@ -23,7 +23,6 @@ Client address: ``app/core/client_address.py`` (X-Forwarded-For only from ``DP_T
 Authorization follows the tenant's live permission matrix (Admin → Permissions).
 """
 
-import contextlib
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import timedelta
@@ -145,12 +144,18 @@ def get_ctx(
         writer = security_events.writer_for(request)
 
         def on_reject(key: ApiKey | None, tenant: Tenant | None) -> None:
-            # Counted against the address (valid keys never are). Over the limit: 429 instead of 401. If the limiter
-            # is unavailable the key is still refused (401): there is nothing to fail open to.
+            """Invalid-key policy (Stage 3B.3). Valid keys never get here. In order:
+            1. The attempt is counted against the address. Over the limit: 429 (TooManyRequests propagates). The
+               limiter records ONE api-key.throttled event when the address becomes blocked; blocked attempts write
+               no api-key.rejected event.
+            2. Limiter unavailable or not configured (outage policy): 503 ServiceUnavailable. The attempt can't be
+               counted, so it is neither answered as an ordinary 401 nor recorded per request (that would be an
+               unbounded write path); the limiter logs the outage once per episode.
+            3. Counted and within the limit: api-key.rejected is recorded, then 401."""
             limiter = getattr(request.app.state, "rate_limiter", None)
-            if limiter is not None:
-                with contextlib.suppress(ThrottleUnavailable):
-                    limiter.enforce("api_key_ip", address_subject(ip), client=ip)
+            if limiter is None:
+                raise ThrottleUnavailable("Authentication is temporarily unavailable")
+            limiter.enforce("api_key_ip", address_subject(ip), client=ip)  # 429 / 503 propagate
             security_events.record_rejection(
                 writer,
                 "api-key.rejected",
