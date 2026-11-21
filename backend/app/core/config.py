@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     # PostgreSQL, as a SQLAlchemy URL: postgresql+psycopg://user:password@host:5432/dbname.
     # Optional outside prod while modules still run on in-memory storage.
     database_url: SecretStr | None = None
+    # Used only by Alembic. Optional: falls back to DP_DATABASE_URL. Set it when migrations should run as a
+    # different (schema-owner) role than the API.
+    migration_database_url: SecretStr | None = None
+    # Migrations give up instead of queueing behind long transactions and blocking live traffic. 0 disables.
+    db_migration_lock_timeout_ms: int = Field(default=10_000, ge=0)
     db_pool_size: int = Field(default=5, ge=1, le=100)
     db_max_overflow: int = Field(default=10, ge=0, le=100)
     db_pool_timeout_seconds: float = Field(default=10, gt=0)
@@ -45,7 +50,7 @@ class Settings(BaseSettings):
     def dev_auth_enabled(self) -> bool:
         return self.env in ("dev", "test")
 
-    @field_validator("database_url", mode="before")
+    @field_validator("database_url", "migration_database_url", mode="before")
     @classmethod
     def _empty_means_unset(cls, v: object) -> object:
         return None if isinstance(v, str) and not v.strip() else v

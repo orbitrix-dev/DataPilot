@@ -1,6 +1,7 @@
 """Stage 1: PostgreSQL connection management, per-request transactions and the DB health check."""
 
 from collections.abc import Iterator
+from typing import get_args
 from uuid import uuid4
 
 import pytest
@@ -136,6 +137,12 @@ def test_commit_failure_is_reported_to_the_client_not_hidden_behind_a_200(databa
     finally:
         with database.session() as s:
             s.execute(text(f"DROP TABLE IF EXISTS {table}"))
+
+
+def test_db_session_dependency_is_function_scoped():
+    """The behaviour above depends on scope="function" (FastAPI >= 0.121). Fail loudly if it's ever dropped."""
+    depends = get_args(DbSession)[1]
+    assert depends.scope == "function", "DbSession must commit before the response is sent"
 
 
 def test_request_transaction_rolls_back_on_domain_error(tx_client, database, probe):

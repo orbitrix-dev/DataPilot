@@ -2,11 +2,12 @@ import os
 from urllib.parse import urlsplit
 
 import pytest
+from alembic.config import Config
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.core.config import Settings
+from app.core.config import BACKEND_DIR, Settings
 from app.core.db import Database
 from app.main import create_app
 from app.seed import demo_registry
@@ -29,12 +30,20 @@ if TEST_DATABASE_URL is not None:
         raise pytest.UsageError(
             f"DP_TEST_DATABASE_URL points at database {_db_name!r}; tests only run against a database ending in '_test'"
         )
-    # Every Settings() built during the test run (including ones tests create directly) uses the test database,
-    # never the development database configured in .env. Real environment variables override .env files.
+    # Every Settings() built during the test run (including Alembic's, and ones tests create directly) uses the test
+    # database, never the development database configured in .env. Real environment variables override .env files.
     os.environ["DP_DATABASE_URL"] = TEST_DATABASE_URL.get_secret_value()
 else:
     # Empty, not removed: removing it would let Settings() fall back to the development database URL in .env.
     os.environ["DP_DATABASE_URL"] = ""
+# Migrations in tests always target the test database too (an empty value falls back to DP_DATABASE_URL).
+os.environ["DP_MIGRATION_DATABASE_URL"] = ""
+
+
+def alembic_config() -> Config:
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.attributes["configure_logger"] = False  # keep pytest's logging setup
+    return cfg
 
 
 @pytest.fixture(scope="session")
