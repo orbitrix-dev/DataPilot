@@ -1,6 +1,6 @@
 # DataPilot front end: build notes
 
-This document covers the first implementation of the DataPilot web app from the Stitch designs in [`stitch_datapilot_enterprise_design_system/`](../stitch_datapilot_enterprise_design_system/). All 46 designed screens are built and render without console errors. The backend is not connected yet: every API call is simulated.
+This document covers the first implementation of the DataPilot web app from the Stitch designs in [`stitch_datapilot_enterprise_design_system/`](../stitch_datapilot_enterprise_design_system/). All 57 designed screens are built and render without console errors. The backend is not connected yet: every API call is simulated.
 
 ## Branches
 
@@ -18,12 +18,13 @@ Each area of work was built on its own branch and merged into `main` with a merg
 | `feature/trust` | The Trust module: overview, quality dashboard, quality rules, freshness, schema changes, lineage, incidents, incident details, root cause analysis and business impact |
 | `feature/insights` | The Insights module: executive dashboard, sales, customer, product, inventory, purchase and receivables analytics, metric explorer, reports library and report details |
 | `feature/intelligence` | The Intelligence module: assistant home, evidence-backed answers (conversation, chart, anomaly and recommendation layouts), forecasting workspace, explanation & evidence, and conversation history |
+| `feature/automate` | The Automate module: overview, workflow marketplace, builder, trigger / condition / action configuration, workflow details, approval center, scheduled workflows, execution history and execution logs |
 
 ## How the design maps to code
 
 - **Design tokens.** [`tailwind.config.js`](../tailwind.config.js) is copied unchanged from the Stitch export; every screen used the same config. Tailwind classes from the design HTML (`bg-light-primary`, `text-title-md`, `gap-gutter-md`, …) therefore work as-is in the components.
 - **App shell.** In-app pages render inside [`AppShell`](../src/components/layout/AppShell.tsx), which provides the sidebar, the top bar and the page width. Each page sets its breadcrumb and browser tab title with `usePageChrome(...)`. Full-screen flows (auth and onboarding) render outside the shell.
-- **Routing.** [`src/app/router.tsx`](../src/app/router.tsx) combines the route list exported by each feature (`authRoutes`, `onboardingRoutes`, `connectRoutes`, `trustRoutes`, `insightsRoutes`, `intelligenceRoutes`, `designSystemRoutes`). Sidebar modules with no design yet (Automate, admin pages) show a placeholder page.
+- **Routing.** [`src/app/router.tsx`](../src/app/router.tsx) combines the route list exported by each feature (`authRoutes`, `onboardingRoutes`, `connectRoutes`, `trustRoutes`, `insightsRoutes`, `intelligenceRoutes`, `automateRoutes`, `designSystemRoutes`). Sidebar modules with no design yet (Command Center, admin pages) show a placeholder page.
 - **Feature folders.** Each product area lives in `src/features/<area>/` with its own pages, components and mock data. Shared building blocks are in `src/components/ui/` (Icon, Button, Badge, Card, Modal, Drawer, Toast).
 
 ## Routes
@@ -80,6 +81,17 @@ Each area of work was built on its own branch and merged into `main` with a merg
 | | `/intelligence/forecast` | `intelligence_forecasting_workspace` |
 | | `/intelligence/evidence/:answerId` | `intelligence_explanation_evidence_panel` (designed for the sales comparison; every answer has its own evidence) |
 | | `/intelligence/history` | `intelligence_conversation_history` |
+| Automate | `/automate` | `automate_overview` |
+| | `/automate/marketplace` | `automate_workflow_marketplace` |
+| | `/automate/workflows/:workflowId` | `automate_workflow_details` |
+| | `/automate/workflows/:workflowId/builder` | `automate_workflow_builder` |
+| | `/automate/workflows/:workflowId/trigger` | `automate_trigger_configuration` |
+| | `/automate/workflows/:workflowId/conditions` | `automate_condition_configuration` |
+| | `/automate/workflows/:workflowId/action` | `automate_action_configuration` |
+| | `/automate/approvals` | `automate_approval_center` |
+| | `/automate/scheduled` | `automate_scheduled_workflows` |
+| | `/automate/history` | `automate_execution_history` |
+| | `/automate/runs/:runId` | `automate_execution_logs` (designed for RUN-8842; every run has its own trace) |
 
 ## Changes from the static designs
 
@@ -99,11 +111,16 @@ The designs are static HTML, so some behaviour had to be decided during the buil
 - **Intelligence ↔ Trust.** The overdue-payments answer is qualified while INC-204 is open. The anomaly and stock-out answers are qualified while `warehouse.stock_levels` is stale. Resolving the incident or refreshing the feed in Trust turns them Verified. History rows keep the status from when the question was asked.
 - **Intelligence data fixes.** The designs contradicted the existing data in places, and the existing data was kept. The stale warehouse feed is INC-203 (the design said INC-204, the duplicate-invoice incident). SKU-4410 and SKU-2108 use their Insights names, stock levels and days of cover, so suggested orders are computed (620 cases, 90 units) instead of 600/350. "Apex accounts for 40%" refers to the $70,380 balance over 60 days, not the 90+ bucket (where Apex is 100%). The anomaly answer compares this week's Mon–Fri wholesale invoices (Nov 16–20, not Nov 11–15) with a Mon–Fri baseline of $308,600, because the design's $336,600 baseline was higher than the forecast's observed full weeks. Forecast horizons of 30/60/90 days are 4/8/12 forecast weeks. Growth figures are measured against the same number of observed weeks (the design's 60-day +7.2% works out to +7.0%), and the disclosure names the weeks actually shown. Dataset names follow Trust (`public.orders`, `public.invoices`, `warehouse.stock_levels`) instead of the designs' `erp_*`/`wms_*` names. The forecast's "Trust score 98.4%" became the Sales & Orders check count, since Trust shows ~94% overall.
 - **Intelligence behaviour.** "Create PO draft" stores the draft for the session (it can be discarded) and says nothing was sent to suppliers. The evidence page has an answer picker and a sources table with live Trust freshness. Follow-ups that pointed at unrelated screens (e.g. "Draft reminder schedule" opening the stock-out recommendation) were replaced with ones that have real answers or Insights pages.
+- **Automate state.** Creating a workflow (blank or from a template), saving each step, renaming, testing, publishing, pausing, approving, rejecting and retrying update every Automate page during the session (`src/features/automate/store.ts`). Nothing is sent anywhere: an approved action becomes a run that "executes" after a short delay.
+- **Automate behaviour.** Conditions are evaluated against sample rows (`src/features/automate/evaluate.ts`), so the live preview, the dry run and the run traces are computed rather than fixed text. A numeric condition can compare against another field (`days_of_cover < lead_time_days`). Every form validates, and the builder blocks testing and publishing until the trigger, conditions and action are set. Publishing asks for confirmation and bumps the version; editing a published workflow marks it "Unpublished changes". Rejecting asks for an optional reason and appears in execution history. "Retry action now" re-uses the existing approval. The step indicator, the rename control, the recent-runs list on workflow details and the history filters/search were not designed.
+- **Automate ↔ Trust.** The Trust freshness gate is live: while INC-204 is open, the builder's dry run for the overdue-invoice workflow is held and says why; resolving INC-204 lets it pass. Approval requests show a Trust warning while their source data has an issue, and approving one asks for confirmation and records the warning in the audit trail. The paused sync-failure workflow warns that Amazon S3 — Raw Orders is failing in Connect.
+- **Automate data fixes.** The designs' `ar_invoices`, `wms_inventory_snapshot` and `connect_sync_jobs` became `public.invoices`, `warehouse.stock_levels` and `connect.sync_runs`. The stale warehouse feed is INC-203 (the design said INC-204). The overdue customers are existing ones (Great Lakes Builders Co. and Summit Contractors Supply, $11,200 + $7,200 = $18,400) instead of the new "Northstar Supply" and "Valley Wholesale"; each customer's sample invoices add up to its Insights overdue figure. "Midwest Distributors" was dropped. The low-inventory rule is "days of cover < supplier lead time" (as the marketplace described), which matches SKU-4410 and SKU-2108 with the Insights lead times; the design's "< 7 days" would not have matched SKU-2108 (11 days). Times are UTC, like Trust, and "today" is Friday Nov 20, so next Monday is Nov 23 (the design said Nov 24) and the last weekly report ran Mon Nov 16 (not Wed Nov 18). The weekly-report approval is an ad-hoc run, since that workflow only runs on Mondays. KPIs are counted from the runs (8 approved runs in 7 days, 7 succeeded) instead of the design's 42 / 97.6%, which four workflows could not produce. RUN-8842 has used all 3 automatic retries and waits for a manual retry, because its 08:15 failure was hours old. The "follow-up task" workflow is a draft, so the design's executed run for it was removed. Email addresses use `acme.io`, like the profile menu.
+- **Automate roles.** Approver roles are shown but not enforced: the signed-in mock user can approve everything.
 - **Connect state.** Retrying a sync, rotating credentials, adding a connection or removing one updates every Connect page during the session.
 
 ## Not done yet
 
-- **No real backend.** Simulated calls live in `src/features/auth/api.ts` and `src/features/connect/store.ts` `src/features/trust/store.ts` the static data in `src/features/insights/data.ts` and `src/features/intelligence/data.ts`, and should be replaced with real API calls.
+- **No real backend.** Simulated calls live in `src/features/auth/api.ts` and `src/features/connect/store.ts` `src/features/trust/store.ts` the static data in `src/features/insights/data.ts`, `src/features/intelligence/data.ts` and `src/features/automate/data.ts`, and should be replaced with real API calls.
 - **No sessions or route protection.** Shell pages are reachable without signing in.
 - **Dark mode.** The design spec defines dark tokens, but no dark-mode screens were designed.
 - **No automated tests.** Each page was checked in a headless browser, but no test suite exists.
@@ -128,4 +145,5 @@ npm run lint
 7. **Trust.** On `/trust/incidents/INC-204`, mark it resolved. The overview incident count, lineage nodes and impact table update. Refresh `warehouse.stock_levels` on `/trust/freshness`, and create a rule on `/trust/rules` (submit empty first to see validation).
 8. **Insights.** On `/insights/receivables`, follow "Inspect incident", mark INC-204 resolved, then return via the sidebar: the banner and the dashboard's Trust chip are gone. Refresh `warehouse.stock_levels` on `/trust/freshness` and the inventory chips turn on-time. Try every metric/dimension pair in `/insights/metrics` and export a CSV from a report.
 9. **Intelligence.** Ask each example question on `/intelligence`, then type something unsupported (e.g. "employee churn") to see the no-answer reply. Switch forecast horizons, create and discard a PO draft, and filter or search `/intelligence/history`. Resolve INC-204 and refresh `warehouse.stock_levels` in Trust. The overdue, anomaly and stock-out answers should turn Verified.
-10. **App shell.** Switch organization, open notifications, collapse the sidebar, check a mobile-width layout, and sign out.
+10. **Automate.** On `/automate/approvals`, approve REQ-9041, approve REQ-9040 (confirm the Trust warning) and reject REQ-9038 with a reason; the overview and history update. Retry RUN-8842 from its log. Test the overdue-invoice workflow in the builder (held by INC-204), resolve INC-204 in Trust and test again. Build a blank workflow: submit each step empty to see validation, then finish and publish it.
+11. **App shell.** Switch organization, open notifications, collapse the sidebar, check a mobile-width layout, and sign out.

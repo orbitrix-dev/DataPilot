@@ -1,0 +1,221 @@
+<!DOCTYPE html><html lang="en"><head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trigger Configuration — DataPilot Automate</title>
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <script id="tailwind-config">/** @type {import('tailwindcss').Config} */
+globalThis.tailwind = globalThis.tailwind || {};
+globalThis.tailwind.config = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        'success': '#15803D',
+        'on-success': '#FFFFFF',
+        'success-container': '#DCFCE7',
+        'on-success-container': '#14532D',
+        'warning': '#B45309',
+        'on-warning': '#FFFFFF',
+        'warning-container': '#FEF3C7',
+        'on-warning-container': '#78350F',
+        'error': '#B91C1C',
+        'on-error': '#FFFFFF',
+        'error-container': '#FEE2E2',
+        'on-error-container': '#7F1D1D',
+        'info': '#1D4ED8',
+        'on-info': '#FFFFFF',
+        'info-container': '#DBEAFE',
+        'on-info-container': '#1E3A8A',
+        'light-primary': '#1E40AF',
+        'light-on-primary': '#FFFFFF',
+        'light-primary-container': '#EEF2FF',
+        'light-on-primary-container': '#1E3A8A',
+        'light-secondary': '#4338CA',
+        'light-on-secondary': '#FFFFFF',
+        'light-surface': '#FFFFFF',
+        'light-on-surface': '#0F172A',
+        'light-surface-variant': '#F8FAFC',
+        'light-on-surface-variant': '#475569',
+        'light-surface-container-low': '#F8FAFC',
+        'light-surface-container': '#F1F5F9',
+        'light-surface-container-high': '#E2E8F0',
+        'light-outline': '#CBD5E1',
+        'light-outline-variant': '#E2E8F0',
+        'dark-primary': '#818CF8',
+        'dark-on-primary': '#0F172A',
+        'dark-primary-container': '#1E1B4B',
+        'dark-on-primary-container': '#E0E7FF',
+        'dark-secondary': '#A5B4FC',
+        'dark-on-secondary': '#0F172A',
+        'dark-surface': '#0F172A',
+        'dark-on-surface': '#F8FAFC',
+        'dark-surface-variant': '#1E293B',
+        'dark-on-surface-variant': '#94A3B8',
+        'dark-surface-container-low': '#0F172A',
+        'dark-surface-container': '#1E293B',
+        'dark-surface-container-high': '#334155',
+        'dark-outline': '#334155',
+        'dark-outline-variant': '#1E293B',
+      },
+      borderRadius: {
+        'sm': '4px',
+        'DEFAULT': '6px',
+        'md': '8px',
+        'lg': '10px',
+        'xl': '12px',
+        'full': '9999px',
+      },
+      spacing: {
+        'gutter-xs': '4px',
+        'gutter-sm': '8px',
+        'gutter-md': '16px',
+        'gutter-lg': '24px',
+        'gutter-xl': '32px',
+        'section': '24px',
+        'page-margin': '24px',
+      },
+      fontFamily: {
+        'display': ['"Inter"', 'sans-serif'],
+        'headline': ['"Inter"', 'sans-serif'],
+        'title': ['"Inter"', 'sans-serif'],
+        'body': ['"Inter"', 'sans-serif'],
+        'label': ['"Inter"', 'sans-serif'],
+        'mono': ['"JetBrains Mono"', 'monospace'],
+      },
+      fontSize: {
+        'display-lg': ['36px', { lineHeight: '44px', letterSpacing: '-0.75px', fontWeight: '600' }],
+        'display-lg-mobile': ['28px', { lineHeight: '34px', letterSpacing: '-0.5px', fontWeight: '600' }],
+        'headline-lg': ['24px', { lineHeight: '32px', letterSpacing: '-0.4px', fontWeight: '600' }],
+        'headline-md': ['20px', { lineHeight: '28px', letterSpacing: '-0.25px', fontWeight: '600' }],
+        'title-lg': ['16px', { lineHeight: '24px', letterSpacing: '-0.1px', fontWeight: '600' }],
+        'title-md': ['14px', { lineHeight: '20px', letterSpacing: '0px', fontWeight: '600' }],
+        'body-lg': ['15px', { lineHeight: '22px', letterSpacing: '0px', fontWeight: '400' }],
+        'body-md': ['14px', { lineHeight: '20px', letterSpacing: '0px', fontWeight: '400' }],
+        'body-sm': ['12px', { lineHeight: '16px', letterSpacing: '0px', fontWeight: '400' }],
+        'label-lg': ['14px', { lineHeight: '20px', letterSpacing: '0px', fontWeight: '500' }],
+        'label-md': ['12px', { lineHeight: '16px', letterSpacing: '0.1px', fontWeight: '500' }],
+        'label-sm': ['11px', { lineHeight: '14px', letterSpacing: '0.3px', fontWeight: '600' }],
+        'mono-sm': ['12px', { lineHeight: '18px', letterSpacing: '0px', fontWeight: '400' }],
+      },
+      transitionDuration: {
+        'state-change': '150ms',
+        'surface-enter': '220ms',
+        'surface-exit': '140ms',
+      },
+      transitionDelay: {
+        'state-change': '0ms',
+        'surface-enter': '0ms',
+        'surface-exit': '0ms',
+      },
+      transitionTimingFunction: {
+        'state-change': 'ease-out',
+        'surface-enter': 'cubic-bezier(0.16, 1, 0.3, 1)',
+        'surface-exit': 'cubic-bezier(0.3, 0, 1, 1)',
+      },
+    },
+  },
+};
+if (typeof module !== 'undefined') module.exports = globalThis.tailwind.config;
+</script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=block" rel="stylesheet">
+  <style>.material-symbols-outlined { display: inline-block; width: 1em; height: 1em; line-height: 1 !important; box-sizing: content-box; overflow: hidden; white-space: nowrap; direction: ltr; vertical-align: middle; }</style>
+</head>
+<body class="bg-light-surface-variant text-light-on-surface font-body antialiased">
+  <div class="min-h-[1024px] flex bg-light-surface-variant" data-stitch-vh="min-h-[1024px]===min-h-screen">
+    <aside class="hidden lg:sticky top-0 left-0 z-20 min-h-[1024px] w-64 bg-light-surface border-r border-light-outline-variant lg:flex flex-col justify-between shrink-0" data-stitch-vh="min-h-[1024px]===min-h-screen">
+      <div class="flex flex-col">
+        <div class="h-14 px-4 border-b border-light-outline-variant flex items-center gap-2.5"><div class="w-8 h-8 rounded bg-light-primary text-light-on-primary flex items-center justify-center"><span class="material-symbols-outlined text-[18px]">analytics</span></div><span class="font-title text-title-lg">DataPilot</span></div>
+        <nav class="p-3 flex flex-col gap-1">
+          <span class="px-2.5 py-1.5 font-label text-label-sm uppercase text-light-on-surface-variant">Platform</span>
+          <a href="../application-shell/ApplicationShell.html" class="flex items-center gap-3 px-2.5 py-2 rounded text-light-on-surface-variant hover:bg-light-surface-container font-label text-label-lg"><span class="material-symbols-outlined text-[20px]">dashboard</span><span>Command Center</span></a>
+          <a href="../connect-overview/ConnectOverview.html" class="flex items-center gap-3 px-2.5 py-2 rounded text-light-on-surface-variant hover:bg-light-surface-container font-label text-label-lg"><span class="material-symbols-outlined text-[20px]">hub</span><span>Connect</span></a>
+          <a href="../trust-overview/TrustOverview.html" class="flex items-center gap-3 px-2.5 py-2 rounded text-light-on-surface-variant hover:bg-light-surface-container font-label text-label-lg"><span class="material-symbols-outlined text-[20px]">verified_user</span><span>Trust</span></a>
+          <a href="../insights-executive/ExecutiveDashboard.html" class="flex items-center gap-3 px-2.5 py-2 rounded text-light-on-surface-variant hover:bg-light-surface-container font-label text-label-lg"><span class="material-symbols-outlined text-[20px]">insights</span><span>Insights</span></a>
+          <a href="../intelligence-home/IntelligenceHome.html" class="flex items-center gap-3 px-2.5 py-2 rounded text-light-on-surface-variant hover:bg-light-surface-container font-label text-label-lg"><span class="material-symbols-outlined text-[20px]">psychology</span><span>Intelligence</span></a>
+          <a href="../automate-overview/AutomationOverview.html" aria-current="page" class="flex items-center gap-3 px-2.5 py-2 rounded bg-light-primary-container text-light-on-primary-container font-label text-label-lg"><span class="material-symbols-outlined text-[20px]">bolt</span><span>Automate</span></a>
+        </nav>
+      </div>
+      <div class="p-3 border-t border-light-outline-variant">
+        <div class="flex items-center gap-2.5 px-2.5 py-2 rounded bg-light-surface-container-low">
+          <span class="w-2 h-2 rounded-full bg-light-primary shrink-0"></span>
+          <div><p class="font-label text-label-md text-light-on-surface">Approval-Gated</p><p class="font-body text-body-sm text-light-on-surface-variant">Permission-controlled runs</p></div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="flex-1 min-w-0 flex flex-col">
+      <header class="sticky top-0 z-30 h-14 bg-light-surface border-b border-light-outline-variant px-4 lg:px-6 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <a href="../automate-builder/WorkflowBuilder.html" class="flex items-center gap-1 font-label text-label-md text-light-primary hover:underline">
+            <span class="material-symbols-outlined text-[18px]">arrow_back</span>
+            <span>Back to Builder</span>
+          </a>
+          <span class="font-label text-label-md text-light-on-surface pl-2 border-l border-light-outline-variant">Step 1: Trigger Configuration</span>
+        </div>
+        <div class="w-7 h-7 rounded-full bg-light-primary-container text-light-on-primary-container flex items-center justify-center font-label text-label-md">EW</div>
+      </header>
+
+      <main class="flex-1 p-4 md:p-6 max-w-4xl w-full mx-auto flex flex-col gap-6">
+        <div>
+          <h1 class="font-headline text-headline-md text-light-on-surface">Configure Workflow Trigger</h1>
+          <p class="font-body text-body-md text-light-on-surface-variant mt-0.5">Choose when this workflow evaluates your authorized datasets.</p>
+        </div>
+
+        <form action="../automate-condition/ConditionConfiguration.html" class="bg-light-surface border border-light-outline-variant rounded-md p-6 flex flex-col gap-5">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <label class="p-4 rounded border-2 border-light-primary bg-light-primary-container flex items-start gap-3 cursor-pointer">
+              <input type="radio" name="trigger_type" checked class="mt-1 text-light-primary focus:ring-light-primary">
+              <div>
+                <p class="font-label text-label-lg text-light-on-primary-container">Data Threshold / Event</p>
+                <p class="font-body text-body-sm text-light-on-primary-container mt-0.5">Evaluate when a dataset updates or crosses a threshold.</p>
+              </div>
+            </label>
+            <label class="p-4 rounded border border-light-outline-variant bg-light-surface flex items-start gap-3 cursor-pointer">
+              <input type="radio" name="trigger_type" class="mt-1 text-light-primary focus:ring-light-primary">
+              <div>
+                <p class="font-label text-label-lg text-light-on-surface">Recurring Schedule</p>
+                <p class="font-body text-body-sm text-light-on-surface-variant mt-0.5">Run on a fixed daily, weekly, or monthly cadence.</p>
+              </div>
+            </label>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="block font-label text-label-md text-light-on-surface mb-1.5">Authorized Dataset</label>
+              <select class="w-full rounded border border-light-outline bg-light-surface text-body-md text-light-on-surface">
+                <option>ar_invoices (PostgreSQL Production ERP)</option>
+                <option>wms_inventory_snapshot (Warehouse Feed)</option>
+                <option>connect_sync_jobs (Connect Telemetry)</option>
+              </select>
+            </div>
+            <div>
+              <label class="block font-label text-label-md text-light-on-surface mb-1.5">Evaluation Cadence</label>
+              <select class="w-full rounded border border-light-outline bg-light-surface text-body-md text-light-on-surface">
+                <option>Every weekday at 07:00 AM</option>
+                <option>Immediately after successful sync</option>
+                <option>Every Monday at 08:00 AM</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Trust Gate -->
+          <div class="p-4 rounded bg-light-surface-container-low border border-light-outline-variant flex items-start gap-3">
+            <input type="checkbox" checked class="mt-1 rounded text-light-primary focus:ring-light-primary">
+            <div>
+              <p class="font-label text-label-md text-light-on-surface">Require DataPilot Trust Freshness Gate (Recommended)</p>
+              <p class="font-body text-body-sm text-light-on-surface-variant mt-0.5">Pause trigger evaluation if the source dataset has an active Trust incident or is more than 2 hours stale.</p>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-end gap-3 pt-2 border-t border-light-outline-variant">
+            <a href="../automate-builder/WorkflowBuilder.html" class="px-4 py-2 rounded border border-light-outline bg-light-surface hover:bg-light-surface-container font-label text-label-lg">Cancel</a>
+            <button type="submit" class="px-4 py-2 rounded bg-light-primary text-light-on-primary hover:bg-light-secondary font-label text-label-lg">Save &amp; Configure Conditions →</button>
+          </div>
+        </form>
+      </main>
+    </div>
+  </div>
+
+
+</body></html>
