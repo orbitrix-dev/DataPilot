@@ -1,7 +1,14 @@
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import Settings, get_settings
+from app.core.db import Database
 from app.core.errors import install_error_handlers
 from app.modules.audit.router import router as audit_router
 from app.modules.automate.router import router as automate_router
@@ -14,6 +21,8 @@ from app.modules.tenants.router import router as tenants_router
 from app.modules.trust.router import router as trust_router
 from app.seed import demo_registry
 from app.tenant_data import Registry
+
+log = logging.getLogger(__name__)
 
 ROUTERS = [
     tenants_router,
@@ -28,14 +37,28 @@ ROUTERS = [
 ]
 
 
-def create_app(settings: Settings | None = None, registry: Registry | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None, registry: Registry | None = None, database: Database | None = None
+) -> FastAPI:
+    """``database`` lets tests inject a shared one; otherwise it's built from settings and owned by the app."""
     settings = settings or get_settings()
+    owns_database = database is None
+    db = Database.from_settings(settings) if owns_database else database
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        yield
+        if owns_database and db is not None:
+            db.dispose()
+
     app = FastAPI(
         title="DataPilot API",
         version="0.1.0",
         docs_url=f"{settings.api_prefix}/docs",
         openapi_url=f"{settings.api_prefix}/openapi.json",
+        lifespan=lifespan,
     )
+    app.state.db = db
     # In-memory storage seeded with the demo tenant. Replace with PostgreSQL-backed repositories.
     app.state.registry = registry or demo_registry()
     app.dependency_overrides[get_settings] = lambda: settings
@@ -50,7 +73,20 @@ def create_app(settings: Settings | None = None, registry: Registry | None = Non
 
     @app.get("/healthz", tags=["ops"])
     def healthz() -> dict[str, str]:
+        """Liveness: the process is up. Doesn't touch the database."""
         return {"status": "ok", "env": settings.env}
+
+    @app.get("/healthz/db", tags=["ops"])
+    def healthz_db() -> JSONResponse:
+        """Readiness of PostgreSQL. 503 when unconfigured or unreachable; error details go to the log only."""
+        if db is None:
+            return JSONResponse({"status": "unavailable", "database": "not_configured"}, status_code=503)
+        try:
+            latency_ms = db.ping()
+        except SQLAlchemyError:
+            log.exception("Database health check failed")
+            return JSONResponse({"status": "unavailable", "database": "unreachable"}, status_code=503)
+        return JSONResponse({"status": "ok", "database": "ok", "latency_ms": round(latency_ms, 2)})
 
     for router in ROUTERS:
         app.include_router(router, prefix=settings.api_prefix)

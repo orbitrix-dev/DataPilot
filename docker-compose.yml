@@ -1,0 +1,33 @@
+# Local development services. Copy .env.example to .env first; nothing secret lives in this file.
+#   docker compose up -d postgres      # start PostgreSQL (waits for the health check with --wait)
+#   docker compose down                # stop (data is kept in the datapilot-pgdata volume)
+#   docker compose down -v             # stop AND delete all local database data
+name: datapilot
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env (see .env.example)}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (see .env.example)}
+      POSTGRES_DB: ${POSTGRES_DB:-datapilot}
+      # Created alongside POSTGRES_DB by docker/postgres/initdb on first start; used only by the test suite.
+      POSTGRES_TEST_DB: ${POSTGRES_TEST_DB:-datapilot_test}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    ports:
+      # Bound to loopback only: the database is not exposed to the local network.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # PostgreSQL 18 images keep data under /var/lib/postgresql/<major>/docker.
+      - datapilot-pgdata:/var/lib/postgresql
+      - ./docker/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  datapilot-pgdata:

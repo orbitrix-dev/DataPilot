@@ -25,7 +25,9 @@ def test_unknown_user_and_tenant_are_rejected(client):
 
 
 def test_dev_headers_are_ignored_in_prod():
-    prod = TestClient(create_app(Settings(env="prod"), demo_registry()), base_url="http://testserver/api/v1")
+    # Prod requires a database URL; this one is never contacted because /me doesn't use the database yet.
+    settings = Settings(env="prod", database_url="postgresql+psycopg://unused@127.0.0.1:1/unused")
+    prod = TestClient(create_app(settings, demo_registry()), base_url="http://testserver/api/v1")
     r = prod.get("/me", headers=as_user("u-elena"))
     assert r.status_code == 401
     assert r.json()["error"]["code"] == "unauthorized"

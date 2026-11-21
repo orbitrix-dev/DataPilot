@@ -29,3 +29,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 backend/.env
+
+# Local environment (secrets). Only the example is committed.
+.env
+.env.*
+!.env.example

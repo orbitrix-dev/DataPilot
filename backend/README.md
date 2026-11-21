@@ -4,25 +4,127 @@ The FastAPI application backend from [docs/ARCHITECTURE.md](../docs/ARCHITECTURE
 
 ## Run it
 
-Needs [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 for you).
+### Prerequisites
+
+- [uv](https://docs.astral.sh/uv/) 0.5+ (it installs Python 3.12 for you)
+- Docker with Compose v2.17+ (for `--wait`), with the Docker daemon running (on macOS, open Docker Desktop)
+
+### First-time setup
+
+From the repository root:
 
 ```bash
+cp .env.example .env
+# Edit .env: replace every "change-me-local-only" with one password of your choice (3 places).
+docker compose up -d --wait postgres     # PostgreSQL 18 on 127.0.0.1:5432; returns once the health check passes
 cd backend
-uv sync                                   # create .venv and install
+uv sync --locked                         # creates .venv with exactly the versions in uv.lock
+uv run alembic upgrade head              # applies migrations (none yet: a no-op until the schema lands)
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
 - API: `http://localhost:8000/api/v1`
 - Interactive docs: `http://localhost:8000/api/v1/docs`
-- Health: `http://localhost:8000/healthz`
+- Liveness: `http://localhost:8000/healthz` (never touches the database)
+- Database readiness: `http://localhost:8000/healthz/db`, which returns `200 {"status":"ok","database":"ok","latency_ms":…}`, or `503` with `"database": "not_configured"` or `"unreachable"`
+
+Day to day: `docker compose up -d --wait postgres`, then the `uvicorn` line. `docker compose down` stops PostgreSQL and keeps the data; `docker compose down -v` **deletes all local database data**.
+
+### Tests, lint and format
+
+From `backend/`, with the postgres container running:
 
 ```bash
-uv run pytest        # tests
-uv run ruff check .  # lint
-uv run ruff format . # format
+uv run pytest                  # all tests, including the database tests
+uv run ruff check .            # lint
+uv run ruff format --check .   # formatting check (uv run ruff format . to fix)
 ```
 
-Configuration is read from `DP_*` environment variables or `backend/.env` (see `app/core/config.py`): `DP_ENV` (`dev` | `test` | `prod`), `DP_CORS_ORIGINS`, `DP_API_PREFIX`.
+### Configuration
+
+Read from `DP_*` environment variables, then the repo-root `.env` (shared with Docker Compose), then `backend/.env`. Real environment variables win. See `.env.example` for every variable. `.env` files are git-ignored; never commit real credentials.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DP_ENV` | `dev` | `dev` \| `test` \| `prod` |
+| `DP_DATABASE_URL` | none | `postgresql+psycopg://user:pass@host:5432/db`. **Required in prod.** Never printed: it's a `SecretStr`. Empty means unset |
+| `DP_MIGRATION_DATABASE_URL` | `DP_DATABASE_URL` | Used only by Alembic. Set it to migrate as a schema-owner role while the API uses a less-privileged one |
+| `DP_TEST_DATABASE_URL` | none | Test suite only. The database name must end in `_test` |
+| `DP_DB_POOL_SIZE` / `DP_DB_MAX_OVERFLOW` | `5` / `10` | Per process. Keep (`pool_size` + `max_overflow`) × processes under the server's `max_connections` |
+| `DP_DB_POOL_TIMEOUT_SECONDS` | `10` | Wait for a free pooled connection before failing with 503 |
+| `DP_DB_POOL_RECYCLE_SECONDS` | `1800` | Replace connections older than this |
+| `DP_DB_CONNECT_TIMEOUT_SECONDS` | `5` | |
+| `DP_DB_STATEMENT_TIMEOUT_MS` | `15000` | Server-side cap per statement; `0` disables |
+| `DP_DB_MIGRATION_LOCK_TIMEOUT_MS` | `10000` | Migrations give up rather than queue behind long transactions |
+| `DP_CORS_ORIGINS`, `DP_API_PREFIX` | | |
+
+### Database and transactions
+
+`app/core/db.py` owns the engine (one connection pool per process, `pool_pre_ping` on) and gives each request one transaction through the `DbSession` dependency:
+
+```python
+from app.core.db import DbSession
+
+
+@router.post("/things")
+def create_thing(body: ThingIn, db: DbSession) -> ThingOut:
+    thing = Thing(**body.model_dump())
+    db.add(thing)  # no commit(): the dependency commits when the route returns
+    return ThingOut.model_validate(thing, from_attributes=True)
+```
+
+- **The transaction commits when the route returns, before the response is sent.** It rolls back on any exception, including `DomainError`s, so a 4xx never leaves partial writes. If the commit itself fails, the client gets an error, never a `200`.
+- This relies on `Depends(..., scope="function")`, which needs **FastAPI ≥ 0.121**. That's the floor in `pyproject.toml`; the locked version is in `uv.lock`. With FastAPI's default request scope, cleanup would run *after* the response is sent.
+- Connection failures and timeouts become `503 {"error": {"code": "service_unavailable", …}}`, with details logged but never returned.
+- Scripts and workers use `with database.session() as s: ...` for the same commit/rollback behaviour.
+
+There are no ORM models or repositories yet: every module still uses in-memory storage. Persistent repositories are the next stage.
+
+### Migrations (Alembic)
+
+Configuration: [`alembic.ini`](alembic.ini) and [`migrations/env.py`](migrations/env.py). The database URL comes from `DP_MIGRATION_DATABASE_URL`, falling back to `DP_DATABASE_URL`, and is never stored in `alembic.ini`. Autogenerate compares against `app.db.models.Base.metadata`. Every models module must be imported in [`app/db/models.py`](app/db/models.py) or Alembic won't see it.
+
+Run from `backend/`:
+
+```bash
+uv run alembic upgrade head                                    # apply all pending migrations
+uv run alembic current                                         # the database's current revision
+uv run alembic history                                         # all revisions
+uv run alembic downgrade -1                                    # roll back the latest migration
+uv run alembic downgrade base                                  # roll back everything (dev/CI only)
+uv run alembic check                                           # fails if the models have changes with no migration
+uv run alembic revision --autogenerate --rev-id 0001 -m "..."  # create a migration: review and edit it before committing
+uv run alembic upgrade head --sql                              # print the SQL instead of running it (for review)
+```
+
+How migrations run:
+
+- All pending migrations run in **one transaction**. PostgreSQL DDL is transactional, so if any migration fails, the database is left exactly as it was.
+- A `lock_timeout` (10 s by default) makes a migration fail rather than block live traffic while waiting for locks.
+- In production, run `alembic upgrade head` as its own deploy step *before* starting new API processes. The application never creates or alters tables itself.
+- Write migrations that can run while the previous API version is still serving (add, backfill, then switch, then remove), and give every migration a working `downgrade()`.
+
+### Tests and the test database
+
+- Tests use a separate database, `datapilot_test`, created by `docker/postgres/initdb/01-create-test-database.sh` the first time the container starts.
+- The suite refuses any database whose name doesn't end in `_test`. While it runs, it points `DP_DATABASE_URL` and `DP_MIGRATION_DATABASE_URL` at the test database, so neither the app nor Alembic can reach your development data.
+- Migration tests write throwaway revisions to a temp directory and clean up after themselves.
+- If the test database isn't configured or reachable, the database tests **fail** with instructions; they are never silently skipped.
+
+### Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `Cannot connect to the Docker daemon` / `failed to connect to the docker API` | Docker isn't running. Start Docker Desktop and retry. |
+| `required variable POSTGRES_USER is missing a value` | No `.env` at the repo root. `cp .env.example .env` and set the password. |
+| `Bind for 127.0.0.1:5432 failed: port is already allocated` | Another PostgreSQL is using 5432. Set `POSTGRES_PORT=5433` in `.env` and change the port in every `DP_*_URL` to match. |
+| `password authentication failed for user "datapilot"` | The password in `.env` changed after the volume was created; PostgreSQL keeps the original. Restore the old password, or reset with `docker compose down -v` (deletes local data) and `docker compose up -d --wait postgres`. |
+| Tests fail with `database "datapilot_test" does not exist` | The volume predates the init script. Run `docker compose exec postgres sh -c 'createdb -U "$POSTGRES_USER" "$POSTGRES_TEST_DB"'`. |
+| Tests fail with `DP_TEST_DATABASE_URL is not set` / `Test database is unreachable` | Add `DP_TEST_DATABASE_URL` to `.env` (see `.env.example`) and make sure the container is up: `docker compose ps` should show `healthy`. |
+| `/healthz/db` returns `{"database": "not_configured"}` | `DP_DATABASE_URL` is empty or missing in `.env`. |
+| `uv sync --locked` fails with `The lockfile needs to be updated` | `pyproject.toml` changed without updating `uv.lock`. Run `uv lock`, review the diff, and commit both. |
+| `Can't locate revision identified by '…'` | The database was migrated from another branch whose migration files aren't in your checkout. Switch back and `alembic downgrade base`, or, for disposable dev data, `docker compose down -v`. |
+| A migration fails with `canceling statement due to lock timeout` | Another transaction holds a lock on the table. Retry when it finishes, or raise `DP_DB_MIGRATION_LOCK_TIMEOUT_MS` for that run. |
 
 ## Calling it
 
@@ -48,13 +150,20 @@ app/
   deps.py            authentication and permission dependencies
   tenant_data.py     one tenant's repositories + infrastructure
   seed.py            demo tenant
-  core/              config, errors, clock, request context,
+  core/              config, errors, clock, request context, db (engine, sessions, DbSession),
                      Table/InMemoryTable, SecretStore and JobQueue interfaces
+  db/
+    base.py          SQLAlchemy declarative Base + constraint naming convention
+    models.py        imports every ORM model, so Base.metadata is complete for Alembic
   modules/<service>/
     schemas.py       Pydantic models (the API contract)
     repository.py    Protocol the service depends on + in-memory implementation
     service.py       business rules; writes audit events
     router.py        HTTP routes and their permission requirements
+migrations/
+  env.py             Alembic environment (URL from DP_* settings, one transaction, lock_timeout)
+  versions/          migration scripts (none yet)
+alembic.ini          Alembic configuration (no credentials)
 ```
 
 Services receive a `RequestContext` (tenant, principal, repositories, IP) and never touch globals. That's what lets in-memory repositories be swapped for PostgreSQL ones without changing services or routes.
