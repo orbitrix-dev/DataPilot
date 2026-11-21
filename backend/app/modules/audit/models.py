@@ -21,7 +21,17 @@ from app.db.types import IPAddress
 from .actions import CATEGORIES
 
 ACTOR_TYPES = ("user", "api_key", "system", "anonymous")
-SECRET_IN_TEXT = "dp_live_[0-9a-fA-F]{8,}"
+# Credential formats PostgreSQL itself refuses in audit text (migration 0004; the last line after the allowlists and
+# app-side redaction, see sanitize.py). A PostgreSQL ARE: DataPilot API-key secrets, PEM private keys, AWS access key
+# ids, JWTs, and URLs with an unredacted password ("postgresql://user:[REDACTED]@host" is allowed).
+SECRET_IN_TEXT = (
+    "dp_live_[0-9a-fA-F]{8,}"
+    "|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"
+    "|(AKIA|ASIA)[A-Z0-9]{16}"
+    "|eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{5,}"
+    "|://[^[:space:]:/@]+:(?!\\[REDACTED\\])[^[:space:]@/]+@"
+)
+SECRET_CHECKED_COLUMNS = ("summary", "resource_id", "actor_label", "client_label", "metadata::text")
 TABLE_COMMENT = (
     "Append-only audit log. UPDATE/DELETE/TRUNCATE are rejected by trigger; the runtime user may only SELECT and "
     "INSERT. Retention purging is not implemented yet."
@@ -60,8 +70,10 @@ class AuditEventRecord(UUIDPrimaryKey, Base):
         CheckConstraint("NOT (ip_address IS NOT NULL AND client_label IS NOT NULL)", name="one_client_identifier"),
         CheckConstraint("jsonb_typeof(metadata) = 'object'", name="metadata_is_object"),
         CheckConstraint("octet_length(metadata::text) <= 8192", name="metadata_size"),
-        CheckConstraint(f"summary !~ '{SECRET_IN_TEXT}'", name="summary_has_no_secret"),
-        CheckConstraint(f"metadata::text !~ '{SECRET_IN_TEXT}'", name="metadata_has_no_secret"),
+        *(
+            CheckConstraint(f"{column} !~ '{SECRET_IN_TEXT}'", name=f"{column.split('::')[0]}_has_no_secret")
+            for column in SECRET_CHECKED_COLUMNS
+        ),
         Index("ix_audit_events_tenant_id_occurred_at", "tenant_id", text("occurred_at DESC"), "id"),
         Index(
             "ix_audit_events_tenant_id_category_occurred_at", "tenant_id", "category", text("occurred_at DESC"), "id"

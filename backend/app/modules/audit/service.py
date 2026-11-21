@@ -37,11 +37,11 @@ def record(
         action=definition.code,
         actor_type=ctx.principal.kind,
         actor_id=ctx.principal.id,
-        actor_label=ctx.principal.name,
+        actor_label=redact(ctx.principal.name),  # API-key principals carry a user-chosen key name
         summary=redact(summary),
         resource_type=resource_type,
         resource_id=redact(resource_id) if resource_id is not None else None,
-        client=ctx.ip,
+        client=redact(ctx.ip),
         metadata=clean_metadata(definition, metadata),
     )
     ctx.data.audit.append(entry)
