@@ -32,6 +32,7 @@ RUNTIME_TABLE_PRIVILEGES: dict[str, frozenset[str]] = {
     "invitation_tokens": frozenset({"SELECT", "INSERT", "UPDATE"}),  # acceptance marks used; no deletes
     "mfa_totp_factors": frozenset({"SELECT", "INSERT", "UPDATE"}),  # re-enrolment overwrites; no deletes
     "mfa_recovery_codes": frozenset({"SELECT", "INSERT", "UPDATE"}),  # use and regeneration are updates
+    "auth_throttle_buckets": frozenset({"SELECT", "INSERT", "UPDATE"}),  # counters reused in place; owner purges
 }
 
 

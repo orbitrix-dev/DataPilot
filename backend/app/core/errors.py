@@ -47,6 +47,18 @@ class Unprocessable(DomainError):
     code = "unprocessable"
 
 
+class TooManyRequests(DomainError):
+    """Throttled. The body is deliberately generic (no counters, no hint whether an account exists); ``retry_after``
+    (seconds) becomes the Retry-After header."""
+
+    status_code = 429
+    code = "too_many_requests"
+
+    def __init__(self, retry_after: int) -> None:
+        super().__init__("Too many attempts. Try again later.")
+        self.retry_after = max(1, int(retry_after))
+
+
 class NotImplementedYet(DomainError):
     status_code = 501
     code = "not_implemented"
@@ -61,7 +73,8 @@ def _error_response(exc: DomainError) -> JSONResponse:
     body: dict[str, object] = {"code": exc.code, "message": exc.message}
     if exc.details:
         body["details"] = exc.details
-    return JSONResponse(status_code=exc.status_code, content={"error": body})
+    headers = {"Retry-After": str(exc.retry_after)} if isinstance(exc, TooManyRequests) else None
+    return JSONResponse(status_code=exc.status_code, content={"error": body}, headers=headers)
 
 
 def install_error_handlers(app: FastAPI) -> None:

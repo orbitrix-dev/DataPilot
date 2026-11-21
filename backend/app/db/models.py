@@ -5,6 +5,7 @@ Alembic's ``migrations/env.py`` imports ``Base`` from here. Add each new models 
 
 from app.db.base import Base
 from app.modules.audit.models import AuditEventRecord
+from app.modules.auth.models import AuthThrottleBucket
 from app.modules.identity.models import (
     InvitationToken,
     MfaRecoveryCode,
@@ -26,6 +27,7 @@ from app.modules.tenants.models import (
 __all__ = [
     "ApiKey",
     "AuditEventRecord",
+    "AuthThrottleBucket",
     "InvitationToken",
     "MfaRecoveryCode",
     "MfaTotpFactor",
