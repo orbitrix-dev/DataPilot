@@ -31,6 +31,7 @@ uv run uvicorn app.main:app --reload --port 8000
 - **Upgrading a volume created before Stage 3A.1:** add `POSTGRES_APP_USER`, `POSTGRES_APP_PASSWORD` and the new URLs from `.env.example` to `.env`. Then run `docker compose up -d postgres` and `docker compose exec postgres /docker-entrypoint-initdb.d/02-create-app-role.sh` once, before `alembic upgrade head`.
 - **Production is blocked:** with `DP_ENV=prod` the API refuses to start until audit retention is enforced. See [Production blockers](../docs/DATABASE.md#production-blockers).
 - Database readiness: `http://localhost:8000/healthz/db`, which returns `200 {"status":"ok","database":"ok","latency_ms":…}`, or `503` with `"database": "not_configured"` or `"unreachable"`
+- Security audit: `http://localhost:8000/healthz/security-audit`: `200` once a security event has been written and none failed since, `503 "unknown"` before the first write, `503 "degraded"` while the last write failed (counters only; see [docs/SECURITY.md](../docs/SECURITY.md#security-events-for-rejected-requests))
 
 Day to day: `docker compose up -d --wait postgres`, then the `uvicorn` line. `docker compose down` stops PostgreSQL and keeps the data; `docker compose down -v` **deletes all local database data**.
 
@@ -75,6 +76,8 @@ Read from `DP_*` environment variables, then the repo-root `.env` (shared with D
 | `DP_ACCESS_TOKEN_TTL_SECONDS` | `900` | 60–900 |
 | `DP_REFRESH_SESSION_TTL_DAYS` | `30` | Absolute session lifetime, 1–90. The tenant's idle timeout applies too |
 | `DP_INVITATION_TTL_HOURS` | `24` | 1–72 |
+| `DP_MFA_ENCRYPTION_KEYS` / `DP_MFA_ENCRYPTION_KEY_VERSION` | none | `version=secret,…`: TOTP secrets are AES-256-GCM encrypted under a key derived from the active version. **Required in prod.** MFA endpoints answer 503 without them |
+| `DP_MFA_ISSUER` | `DataPilot` | The account issuer authenticator apps display |
 | `DP_API_KEY_PEPPERS` / `DP_API_KEY_PEPPER_VERSION` | none | `version=secret,…` and the active version. **Required in prod.** Rotation: [docs/SECURITY.md](../docs/SECURITY.md#key-management) |
 
 ### Database and transactions
@@ -186,7 +189,9 @@ curl -X POST localhost:8000/api/v1/auth/login -H 'Origin: http://localhost:5173'
 curl -H 'Authorization: Bearer <access_token>' localhost:8000/api/v1/me
 ```
 
-`POST /auth/refresh` (refresh cookie + `X-CSRF-Token` + `Origin`) rotates the session; `POST /auth/logout` ends it. Tokens, cookies, CSRF, rotation, reuse detection and key rotation are described in [docs/SECURITY.md](../docs/SECURITY.md).
+`POST /auth/refresh` (refresh cookie + `X-CSRF-Token` + `Origin`) rotates the session; `POST /auth/logout` ends it.
+
+**MFA (Stage 3B.2).** `POST /auth/mfa/enrollment` (email + password) returns a TOTP secret and `otpauth://` URI; `POST /auth/mfa/enrollment/confirm` (email + password + code) turns MFA on and returns ten recovery codes. From then on sign-in needs `"mfa_code"` (or `"recovery_code"`) too, and creating an API key needs a fresh `mfa_code`. In dev, the demo tenant requires MFA, so a newly invited member enrols before their first sign-in. Tokens, cookies, CSRF, rotation, reuse detection and key rotation are described in [docs/SECURITY.md](../docs/SECURITY.md).
 
 **API keys** (for non-browser clients) are created at `POST /api/v1/api-keys` (the secret is returned once; stored as a peppered HMAC in PostgreSQL) and sent as `Authorization: Bearer dp_live_…`. Keys are read-only and limited to their scopes (`trust:read`, `connect:read`, …). `intelligence:query` may also POST questions.
 
@@ -253,6 +258,6 @@ Approver job titles on workflows ("Finance Manager", "Operations Lead") are not 
 ## Next steps
 
 1. PostgreSQL repositories (SQLAlchemy + Alembic) behind the existing `Protocol`s, with tenant isolation.
-2. Stage 3B.2: TOTP MFA, recovery codes, `require_mfa` enforcement, step-up for API-key creation, `SecurityAuditWriter` for rejected attempts. Stage 3B.3: sign-in throttling and rate limits.
+2. Stage 3B.3: sign-in throttling and rate limits (shared, atomic counters in PostgreSQL). Later: MFA reset by an operator.
 3. Port Insights and Intelligence, then switch the front end's mock stores to this API module by module.
 4. Workers: ingestion (sync jobs), action execution and notification delivery, consuming the job queue.

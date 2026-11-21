@@ -73,11 +73,12 @@ _ACTIONS = (
     _a("user.invitation_accepted", "Invitation Accepted", *_PG, email="str"),
     _a("login.logout", "Logout", *_PG, session_id="str"),
     _a("login.refresh_reuse_detected", "Session Token Reuse Detected", *_PG, session_id="str"),
-    # ---- API keys (PostgreSQL since Stage 3B.1). Creation stays disabled in production until Stage 3B.2 verifies the
-    # step-up MFA code against an enrolled factor (today the code is only format-checked).
-    _a(
-        "api-key.created", "API Key Created", "postgres", "durable", False, name="str", prefix="str", scopes="list[str]"
-    ),
+    # ---- MFA (Stage 3B.2)
+    _a("user.mfa_enrolled", "MFA Enabled", *_PG),
+    _a("user.recovery_codes_regenerated", "Recovery Codes Regenerated", *_PG),
+    _a("login.recovery_code_used", "Recovery Code Used", *_PG, remaining="int"),
+    # ---- API keys (PostgreSQL since Stage 3B.1). Creation requires a verified step-up TOTP code (Stage 3B.2).
+    _a("api-key.created", "API Key Created", *_PG, name="str", prefix="str", scopes="list[str]"),
     _a("api-key.revoked", "API Key Revoked", *_PG, name="str", prefix="str"),
     # ---- In-memory modules (Automate, Billing, Connect, Notifications)
     _a(
@@ -95,9 +96,13 @@ _ACTIONS = (
     _a("settings.notifications_changed", "Notifications Changed", *_MEMORY, category="str", enabled="bool"),
     # ---- Sign-in
     _a("login.succeeded", "Login", *_PG, method="str"),
-    _a("login.blocked", "Login Blocked", "postgres", "durable", False, reason="str"),
-    # ---- Security events written by SecurityAuditWriter (independent transaction). Wired in Stage 3B.
-    _a("api-key.rejected", "API Key Rejected", "postgres", "durable", False, reason="str"),
+    # ---- Security events written by SecurityAuditWriter (independent transaction, so they survive the failed
+    # request). Wired in Stage 3B.2. Never carry the credential that was presented.
+    _a("login.failed", "Login Failed", *_PG, reason="str"),
+    _a("login.blocked", "Login Blocked", *_PG, reason="str"),
+    _a("api-key.rejected", "API Key Rejected", *_PG, reason="str"),
+    _a("api-key.step_up_failed", "Step-up Verification Failed", *_PG, reason="str"),
+    _a("user.recovery_codes_step_up_failed", "Recovery Code Regeneration Refused", *_PG, reason="str"),
 )
 
 ACTIONS: MappingProxyType = MappingProxyType({a.code: a for a in _ACTIONS})

@@ -154,8 +154,7 @@ class ApiKeyCreateIn(BaseModel):
     scopes: list[Scope] = Field(min_length=1)
     # Optional expiry; omitted/null means the key never expires (as before).
     expires_at: datetime | None = None
-    # Step-up verification. NOT yet verified against an enrolled factor: real TOTP step-up arrives in Stage 3B.2, and
-    # until then the api-key.created action is not production-enabled (production refuses to create keys).
+    # Step-up verification: a fresh code from the acting user's confirmed authenticator (verified in the router).
     mfa_code: str = Field(pattern=r"^\d{6}$")
 
     @field_validator("expires_at")

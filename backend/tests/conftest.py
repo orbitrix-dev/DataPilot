@@ -65,6 +65,8 @@ os.environ["DP_JWT_SIGNING_KEYS"] = f"{TEST_JWT_KID}={secrets.token_urlsafe(48)}
 os.environ["DP_JWT_ACTIVE_KID"] = TEST_JWT_KID
 os.environ["DP_API_KEY_PEPPERS"] = f"p1={secrets.token_urlsafe(48)}"
 os.environ["DP_API_KEY_PEPPER_VERSION"] = "p1"
+os.environ["DP_MFA_ENCRYPTION_KEYS"] = f"m1={secrets.token_urlsafe(48)}"
+os.environ["DP_MFA_ENCRYPTION_KEY_VERSION"] = "m1"
 
 
 def alembic_config() -> Config:
@@ -177,11 +179,42 @@ def registry():
     return demo_registry()
 
 
+class RecordingSecurityAudit:
+    """Test double for ``SecurityAuditWriter`` in tests whose data lives in an uncommitted test transaction (the real
+    writer's independent transaction couldn't see that tenant). It validates exactly like the writer (registered
+    action, metadata allowlist) and keeps the events for assertions. The real writer is exercised end to end, with
+    committed data, in test_mfa.py and test_audit_postgres.py."""
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def record(self, action: str, summary: str, **fields) -> bool:
+        from app.modules.audit import actions
+        from app.modules.audit.sanitize import clean_metadata
+
+        definition = actions.get(action)
+        clean_metadata(definition, fields.get("metadata"))
+        self.events.append({"action": action, "summary": summary, **fields})
+        return True
+
+    def actions(self) -> list[str]:
+        return [e["action"] for e in self.events]
+
+    def health(self) -> dict:
+        return {"healthy": True, "state": "healthy", "events_written": len(self.events), "events_failed": 0}
+
+
 @pytest.fixture
-def client(registry, pg_db) -> TestClient:
+def security_audit() -> RecordingSecurityAudit:
+    return RecordingSecurityAudit()
+
+
+@pytest.fixture
+def client(registry, pg_db, security_audit) -> TestClient:
     """A fresh app per test: Tenants and audit in PostgreSQL (demo seeded), other modules in memory. Requests act as
     Elena Vance (Administrator) unless `as_user` is passed."""
-    return TestClient(create_app(Settings(env="test"), registry, database=pg_db), base_url="http://testserver/api/v1")
+    app = create_app(Settings(env="test"), registry, database=pg_db, security_audit=security_audit)
+    return TestClient(app, base_url="http://testserver/api/v1")
 
 
 def as_user(user_id: str) -> dict[str, str]:
@@ -190,3 +223,26 @@ def as_user(user_id: str) -> dict[str, str]:
 
 def audit_events(client: TestClient, **params) -> list[dict]:
     return client.get("/audit-events", params=params).json()["items"]
+
+
+def mfa_code(client: TestClient, user_id: str = "u-elena") -> str:
+    """A real, unused TOTP code for ``user_id``, enrolling an authenticator for them first if needed (through the app's
+    own test transaction). Codes are single use per 30-second step, so this clears the factor's last used step: tests
+    may need several codes within one step."""
+    import pyotp
+    from sqlalchemy import select
+
+    from app.modules.auth import mfa
+    from app.modules.identity.models import User
+
+    settings = Settings(env="test")
+    with client.app.state.db.session() as s:
+        user = s.scalar(select(User).where(User.public_id == user_id))
+        factor = mfa.factor_for(s, user)
+        if factor is None:
+            secret = mfa.start_enrollment(s, settings, user).secret
+            mfa.confirm_enrollment(s, settings, user, pyotp.TOTP(secret).now())
+            factor = mfa.factor_for(s, user)
+        factor.last_used_step = None
+        secret = mfa._secret(mfa.mfa_keyring(settings), factor, user)
+    return pyotp.TOTP(secret).now()

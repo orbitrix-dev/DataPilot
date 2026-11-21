@@ -1,8 +1,13 @@
-from fastapi import APIRouter, status
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel
 
+from app.core.config import Settings, get_settings
 from app.core.context import RequestContext
+from app.core.db import DbSession
 from app.deps import Ctx, admins, need, scope
+from app.modules.auth import mfa, security_events
 
 from . import service
 from .schemas import (
@@ -93,7 +98,28 @@ def list_keys(ctx: RequestContext = admins()) -> list[ApiKeyOut]:
 
 
 @router.post("/api-keys", status_code=status.HTTP_201_CREATED)
-def create_key(body: ApiKeyCreateIn, ctx: RequestContext = admins()) -> ApiKeyCreated:
+def create_key(
+    body: ApiKeyCreateIn,
+    request: Request,
+    db: DbSession,
+    settings: Annotated[Settings, Depends(get_settings)],
+    ctx: RequestContext = admins(),
+) -> ApiKeyCreated:
+    """Step-up: ``mfa_code`` must be a fresh code from the acting user's confirmed authenticator. Failed attempts are
+    recorded by SecurityAuditWriter (the request rolls back)."""
+    try:
+        mfa.require_step_up(db, settings, ctx.principal.id, body.mfa_code)
+    except (mfa.StepUpFailed, mfa.MfaEnrollmentRequired) as exc:
+        security_events.record_rejection(
+            security_events.writer_for(request),
+            "api-key.step_up_failed",
+            "step_up_invalid" if isinstance(exc, mfa.StepUpFailed) else "step_up_not_enrolled",
+            client=ctx.ip,
+            actor_id=ctx.principal.id,
+            actor_label=ctx.principal.name,
+            tenant_id=ctx.tenant_uuid,
+        )
+        raise
     return service.create_key(ctx, body)
 
 

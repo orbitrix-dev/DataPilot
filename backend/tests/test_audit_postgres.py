@@ -36,7 +36,7 @@ from app.modules.tenants.persistence import (
 from app.seed import DEMO_AUDIT_ACTIONS, demo_registry, demo_tenant
 from app.tenant_data import Registry
 
-from .conftest import TEST_DATABASE_URL, as_user, audit_events
+from .conftest import TEST_DATABASE_URL, as_user, audit_events, mfa_code
 from .factories import DEMO_MATRIX
 
 BASE = "http://testserver/api/v1"
@@ -84,14 +84,23 @@ def test_all_18_audit_call_sites_use_registered_action_codes():
 
 
 def _record_event_actions() -> list[tuple[str, str]]:
-    """Actions recorded with audit.service.record_event (flows without a request context: invitations, sign-in)."""
+    """Actions recorded with audit.service.record_event (flows without a request context: invitations, sign-in, MFA),
+    directly or through mfa._audit_everywhere (which forwards its literal action to record_event)."""
     found = []
-    for path in sorted((BACKEND_DIR / "app" / "modules").rglob("service.py")):
+    for path in sorted((BACKEND_DIR / "app" / "modules").rglob("*.py")):
         for node in ast.walk(ast.parse(path.read_text())):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "record_event":
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                continue
+            if node.func.id == "record_event":
                 arg = node.args[1]
-                assert isinstance(arg, ast.Constant), f"{path}: record_event action must be a literal code"
-                found.append((str(path.relative_to(BACKEND_DIR)), arg.value))
+                if isinstance(arg, ast.Name) and arg.id == "action" and path.name == "mfa.py":
+                    continue  # the forwarding call inside _audit_everywhere
+            elif node.func.id == "_audit_everywhere":
+                arg = node.args[3]
+            else:
+                continue
+            assert isinstance(arg, ast.Constant), f"{path}: the audit action must be a literal code"
+            found.append((str(path.relative_to(BACKEND_DIR)), arg.value))
     return found
 
 
@@ -104,6 +113,9 @@ def test_record_event_call_sites_use_registered_action_codes():
             "login.succeeded",
             "login.refresh_reuse_detected",
             "login.logout",
+            "login.recovery_code_used",
+            "user.mfa_enrolled",  # through _audit_everywhere (one event per active membership)
+            "user.recovery_codes_regenerated",
         ]
     )
     assert all(a in ACTIONS for _, a in sites)
@@ -114,9 +126,26 @@ def test_every_registered_action_is_used_by_a_call_site_the_demo_history_or_the_
         {a for _, a in _call_site_actions()}
         | {a for _, a in _record_event_actions()}
         | set(DEMO_AUDIT_ACTIONS.values())
-        | {"api-key.rejected"}
+        | SECURITY_WRITER_ACTIONS
     )
     assert used == set(ACTIONS)
+
+
+# Recorded through SecurityAuditWriter (rejected requests). Each must be named in the code that records it.
+SECURITY_WRITER_ACTIONS = {
+    "login.failed",
+    "login.blocked",
+    "api-key.rejected",
+    "api-key.step_up_failed",
+    "user.recovery_codes_step_up_failed",
+}
+
+
+def test_security_writer_actions_are_registered_and_used():
+    sources = "".join(p.read_text() for p in (BACKEND_DIR / "app").rglob("*.py"))
+    for action in SECURITY_WRITER_ACTIONS:
+        assert action in ACTIONS and ACTIONS[action].production_enabled, action
+        assert f'"{action}"' in sources, action
 
 
 def test_every_action_declares_store_durability_production_and_an_allowlist():
@@ -204,7 +233,7 @@ def test_masked_key_prefixes_are_not_redacted():
 
 def test_every_real_call_site_produces_secret_free_events(client):
     """Drive the API's audited operations and check every stored summary and metadata value."""
-    created = client.post("/api-keys", json={"name": "Reader", "scopes": ["trust:read"], "mfa_code": "123456"})
+    created = client.post("/api-keys", json={"name": "Reader", "scopes": ["trust:read"], "mfa_code": mfa_code(client)})
     secret = created.json()["secret"]
     client.post(f"/api-keys/{created.json()['key']['id']}/revoke")
     client.put("/connect/connections/amazon-s3-raw-orders/credentials", json={"secret": "AKIA-new-secret-value"})
@@ -368,7 +397,7 @@ def test_only_owners_and_administrators_can_read_audit_events(client, user_id):
 
 def test_api_keys_cannot_read_audit_events_whatever_their_scopes(client):
     all_scopes = ["insights:read", "trust:read", "connect:read", "automate:read", "intelligence:query"]
-    created = client.post("/api-keys", json={"name": "Everything", "scopes": all_scopes, "mfa_code": "123456"})
+    created = client.post("/api-keys", json={"name": "Everything", "scopes": all_scopes, "mfa_code": mfa_code(client)})
     r = client.get("/audit-events", headers={"Authorization": f"Bearer {created.json()['secret']}"})
     assert r.status_code == 403
 
@@ -482,21 +511,14 @@ def test_security_writer_still_validates_actions_and_metadata():
     writer.dispose()
 
 
-def test_security_writer_is_not_wired_into_requests_yet(client, pg_conn):
+def test_rejected_api_keys_are_recorded_outside_the_request_transaction(client, pg_conn, security_audit):
+    """The request rolls back (401), so nothing is written in its transaction; the rejection goes to the writer."""
     before = count(pg_conn)
     assert client.get("/trust/incidents", headers={"Authorization": "Bearer dp_live_nope"}).status_code == 401
     assert count(pg_conn) == before
-    # No code (comments don't count) imports or references the writer anywhere in the request path.
-    for path in (BACKEND_DIR / "app").rglob("*.py"):
-        if path.name == "security_writer.py":
-            continue
-        tree = ast.parse(path.read_text())
-        names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {
-            n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
-        }
-        modules = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
-        assert "SecurityAuditWriter" not in names, path
-        assert not any(m and m.endswith("security_writer") for m in modules), path
+    [event] = security_audit.events
+    assert event["action"] == "api-key.rejected" and event["metadata"] == {"reason": "invalid_key"}
+    assert event["tenant_id"] is None and "dp_live_nope" not in str(event)
 
 
 def test_in_memory_repository_matches_the_api_shape():

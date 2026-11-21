@@ -78,22 +78,34 @@ class Settings(BaseSettings):
     api_key_peppers: SecretStr | None = None
     api_key_pepper_version: str | None = None
     invitation_ttl_hours: int = Field(default=24, ge=1, le=72)
+    # ---- MFA (Stage 3B.2). TOTP secrets are encrypted with AES-256-GCM under a key derived (HKDF-SHA256) from the
+    # active version's secret; every listed version still decrypts, and secrets are re-encrypted on use.
+    mfa_encryption_keys: SecretStr | None = None
+    mfa_encryption_key_version: str | None = None
+    mfa_issuer: str = "DataPilot"  # the name authenticator apps show
 
     @property
     def dev_auth_enabled(self) -> bool:
         return self.env in ("dev", "test")
 
-    @field_validator("database_url", "migration_database_url", "jwt_signing_keys", "api_key_peppers", mode="before")
+    @field_validator(
+        "database_url",
+        "migration_database_url",
+        "jwt_signing_keys",
+        "api_key_peppers",
+        "mfa_encryption_keys",
+        mode="before",
+    )
     @classmethod
     def _empty_means_unset(cls, v: object) -> object:
         return None if isinstance(v, str) and not v.strip() else v
 
-    @field_validator("jwt_active_kid", "api_key_pepper_version", mode="before")
+    @field_validator("jwt_active_kid", "api_key_pepper_version", "mfa_encryption_key_version", mode="before")
     @classmethod
     def _empty_version_means_unset(cls, v: object) -> object:
         return None if isinstance(v, str) and not v.strip() else v
 
-    @field_validator("jwt_signing_keys", "api_key_peppers")
+    @field_validator("jwt_signing_keys", "api_key_peppers", "mfa_encryption_keys")
     @classmethod
     def _valid_keyring(cls, v: SecretStr | None) -> SecretStr | None:
         parse_keyring(v)  # malformed entries or short secrets stop startup (the error never contains a secret)
@@ -106,6 +118,11 @@ class Settings(BaseSettings):
         for keys, active, name in (
             (self.jwt_signing_keys, self.jwt_active_kid, "DP_JWT_SIGNING_KEYS/DP_JWT_ACTIVE_KID"),
             (self.api_key_peppers, self.api_key_pepper_version, "DP_API_KEY_PEPPERS/DP_API_KEY_PEPPER_VERSION"),
+            (
+                self.mfa_encryption_keys,
+                self.mfa_encryption_key_version,
+                "DP_MFA_ENCRYPTION_KEYS/DP_MFA_ENCRYPTION_KEY_VERSION",
+            ),
         ):
             if keys is not None or active is not None or self.env == "prod":
                 if keys is None or active is None:
