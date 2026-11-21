@@ -19,7 +19,8 @@ cp .env.example .env
 docker compose up -d --wait postgres     # PostgreSQL 18 on 127.0.0.1:5432; returns once the health check passes
 cd backend
 uv sync --locked                         # creates .venv with exactly the versions in uv.lock
-uv run alembic upgrade head              # applies migrations (none yet: a no-op until the schema lands)
+uv run alembic upgrade head              # creates/updates the schema (tenants, users, roles, permissions, …)
+uv run python -m app.cli seed-demo       # optional: loads the demo tenant into PostgreSQL (idempotent)
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
@@ -78,7 +79,17 @@ def create_thing(body: ThingIn, db: DbSession) -> ThingOut:
 - Connection failures and timeouts become `503 {"error": {"code": "service_unavailable", …}}`, with details logged but never returned.
 - Scripts and workers use `with database.session() as s: ...` for the same commit/rollback behaviour.
 
-There are no ORM models or repositories yet: every module still uses in-memory storage. Persistent repositories are the next stage.
+The core schema (tenants, users, memberships, roles, permissions, sessions) and its PostgreSQL repositories exist, but **the API doesn't use them yet**. Every route still serves the in-memory demo, with unchanged IDs and responses. Schema, permission mapping, tenant isolation and seed details are in [docs/DATABASE.md](../docs/DATABASE.md).
+
+### Demo data in PostgreSQL
+
+`uv run python -m app.cli seed-demo` loads the demo tenant (Acme Global Corp, 12 users, the five system roles with the current permission matrix) into the database at `DP_DATABASE_URL`:
+
+- It's idempotent and insert-only, so re-running it creates nothing and never overwrites edits.
+- It creates **no passwords and no sessions**.
+- It refuses to run when `DP_ENV=prod`.
+
+Run `alembic upgrade head` first. The API keeps serving its own in-memory copy of the same data until it's switched to PostgreSQL.
 
 ### Migrations (Alembic)
 
@@ -93,7 +104,7 @@ uv run alembic history                                         # all revisions
 uv run alembic downgrade -1                                    # roll back the latest migration
 uv run alembic downgrade base                                  # roll back everything (dev/CI only)
 uv run alembic check                                           # fails if the models have changes with no migration
-uv run alembic revision --autogenerate --rev-id 0001 -m "..."  # create a migration: review and edit it before committing
+uv run alembic revision --autogenerate --rev-id 0002 -m "..."  # create a migration: review and edit it before committing
 uv run alembic upgrade head --sql                              # print the SQL instead of running it (for review)
 ```
 
@@ -155,14 +166,19 @@ app/
   db/
     base.py          SQLAlchemy declarative Base + constraint naming convention
     models.py        imports every ORM model, so Base.metadata is complete for Alembic
+    integrity.py     unique/foreign-key violations → domain errors (no DB details in responses)
   modules/<service>/
     schemas.py       Pydantic models (the API contract)
     repository.py    Protocol the service depends on + in-memory implementation
     service.py       business rules; writes audit events
     router.py        HTTP routes and their permission requirements
+    models.py        ORM models (tenants, identity)
+    persistence.py   PostgreSQL repositories (tenants, identity), not yet used by the API
+  modules/tenants/permissions.py   permission catalog + deterministic level ↔ permission-set mapping
+  seed_postgres.py   demo tenant for PostgreSQL;  cli.py: `python -m app.cli seed-demo`
 migrations/
   env.py             Alembic environment (URL from DP_* settings, one transaction, lock_timeout)
-  versions/          migration scripts (none yet)
+  versions/          migration scripts (0001_core_schema.py)
 alembic.ini          Alembic configuration (no credentials)
 ```
 
