@@ -7,6 +7,10 @@ Nothing here stores or logs a secret. Storage only ever receives:
 - an **HMAC-SHA256 digest under a versioned server-side pepper** for API keys, so a stolen database dump alone can't
   be used to check guesses, and the pepper can be rotated (``pepper_version`` is stored with each digest).
 
+MFA: TOTP secrets are encrypted with **AES-256-GCM** (random 96-bit nonce, the user id and key version as
+associated data) under a 256-bit key derived with HKDF-SHA256 from a versioned secret. Recovery codes carry 80 random
+bits, so a SHA-256 digest is enough (nothing to brute-force), and it allows an indexed lookup.
+
 Access tokens are short-lived HS256 JWTs signed with a versioned key (``kid`` header). Validation checks signature,
 algorithm, ``kid``, issuer, audience, expiry and required claims; the session id inside lets every request check
 revocation in the database.
@@ -213,3 +217,61 @@ def decode_access_token(keyring: Keyring, token: str, *, issuer: str, audience: 
         session_public_id=claims["sid"],
         expires_at=datetime.fromtimestamp(claims["exp"], tz=clock.now().tzinfo),
     )
+
+
+# ====================================================================== MFA secrets and recovery codes
+
+_GCM_NONCE_BYTES = 12
+
+
+def _aes_key(secret: bytes) -> bytes:
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b"datapilot/mfa-totp-secret/v1").derive(secret)
+
+
+def _aad(user_id: bytes, version: str) -> bytes:
+    return b"datapilot-mfa|" + user_id + b"|" + version.encode()
+
+
+def encrypt_mfa_secret(keyring: Keyring, plaintext: bytes, *, user_id: bytes) -> tuple[bytes, str]:
+    """→ (nonce || ciphertext || tag, key version). ``user_id`` is bound as associated data."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    nonce = secrets.token_bytes(_GCM_NONCE_BYTES)
+    sealed = AESGCM(_aes_key(keyring.active_secret)).encrypt(nonce, plaintext, _aad(user_id, keyring.active))
+    return nonce + sealed, keyring.active
+
+
+class UndecryptableSecret(Exception):
+    """Unknown key version, wrong key, tampered ciphertext or a ciphertext belonging to another user."""
+
+
+def decrypt_mfa_secret(keyring: Keyring, blob: bytes, version: str, *, user_id: bytes) -> bytes:
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    key = keyring.keys.get(version)
+    if key is None:
+        raise UndecryptableSecret(f"MFA key version {version!r} is not configured")
+    try:
+        return AESGCM(_aes_key(key)).decrypt(blob[:_GCM_NONCE_BYTES], blob[_GCM_NONCE_BYTES:], _aad(user_id, version))
+    except InvalidTag:
+        raise UndecryptableSecret("MFA secret failed authentication") from None
+
+
+RECOVERY_CODE_COUNT = 10
+_RECOVERY_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"  # 31 symbols, no 0/o/1/l/i
+
+
+def new_recovery_code() -> str:
+    """Four groups of four symbols from a 31-symbol alphabet: 16 × log2(31) ≈ 79 bits. Shown once."""
+    raw = "".join(secrets.choice(_RECOVERY_ALPHABET) for _ in range(16))
+    return "-".join(raw[i : i + 4] for i in range(0, 16, 4))
+
+
+def normalize_recovery_code(code: str) -> str:
+    """Accepts any case, spaces and dashes the user types; returns the canonical ``xxxx-xxxx-xxxx-xxxx``."""
+    raw = "".join(ch for ch in code.lower() if ch.isalnum())
+    return "-".join(raw[i : i + 4] for i in range(0, len(raw), 4))

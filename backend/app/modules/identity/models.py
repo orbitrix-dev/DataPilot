@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -81,6 +82,9 @@ class UserSession(UUIDPrimaryKey, Base):
     ip: Mapped[IPAddress | None] = mapped_column(INET)
     location: Mapped[str | None] = mapped_column(String(120))
     user_agent: Mapped[str | None] = mapped_column(String(512))
+    # When the second factor was verified for this session (sign-in with TOTP or a recovery code). NULL: password
+    # only. A tenant that requires MFA refuses sessions without it on every request (Stage 3B.2).
+    mfa_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         # A session exists only for a membership of that tenant; removing the membership ends its sessions.
@@ -159,6 +163,54 @@ class InvitationToken(UUIDPrimaryKey, Base):
             "tenant_id",
             "user_id",
             unique=True,
+            postgresql_where=text("used_at IS NULL AND revoked_at IS NULL"),
+        ),
+    )
+
+
+class MfaTotpFactor(UUIDPrimaryKey, Base):
+    """A user's TOTP authenticator (RFC 6238). One per user. The shared secret is stored only as AES-256-GCM
+    ciphertext under a versioned key (``key_version``), bound to the user by the associated data, so a row copied to
+    another user doesn't decrypt. ``confirmed_at`` NULL means enrolment was started but not proven with a code.
+    ``last_used_step`` is the last accepted 30-second time step: a code is accepted only for a later step, so a code
+    can't be replayed (not even within its own window)."""
+
+    __tablename__ = "mfa_totp_factors"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True
+    )
+    secret_ciphertext: Mapped[bytes] = mapped_column(LargeBinary)  # 12-byte nonce || ciphertext || 16-byte tag
+    key_version: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_used_step: Mapped[int | None] = mapped_column(BigInteger)
+
+    __table_args__ = (
+        # nonce (12) + a 20-byte secret's ciphertext (20) + tag (16) at the least
+        CheckConstraint("octet_length(secret_ciphertext) >= 48", name="secret_is_ciphertext"),
+        CheckConstraint("confirmed_at IS NULL OR confirmed_at >= created_at", name="confirmed_after_creation"),
+    )
+
+
+class MfaRecoveryCode(UUIDPrimaryKey, Base):
+    """One single-use recovery code (80 random bits). Only its SHA-256 digest is stored. Generating a new set revokes
+    the unused codes of the old one."""
+
+    __tablename__ = "mfa_recovery_codes"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    code_hash: Mapped[bytes] = mapped_column(LargeBinary, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("octet_length(code_hash) = 32", name="code_hash_is_digest"),
+        CheckConstraint("used_at IS NULL OR revoked_at IS NULL", name="used_or_revoked"),
+        Index(
+            "ix_mfa_recovery_codes_user_id_unused",
+            "user_id",
             postgresql_where=text("used_at IS NULL AND revoked_at IS NULL"),
         ),
     )

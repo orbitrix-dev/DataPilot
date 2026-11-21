@@ -33,6 +33,8 @@ EXPECTED_GRANTS = {
     "api_keys": {"SELECT", "INSERT", "UPDATE"},
     "refresh_tokens": {"SELECT", "INSERT", "UPDATE"},
     "invitation_tokens": {"SELECT", "INSERT", "UPDATE"},
+    "mfa_totp_factors": {"SELECT", "INSERT", "UPDATE"},
+    "mfa_recovery_codes": {"SELECT", "INSERT", "UPDATE"},
 }
 
 
@@ -193,7 +195,7 @@ def test_runtime_user_cannot_delete_tenants_users_or_roles_or_change_the_schema_
         db_session.execute(text("DELETE FROM users WHERE id = :u"), {"u": u.id})
     with denied(db_session, "permission denied for table roles"):
         db_session.execute(delete(Role).where(Role.tenant_id == t.id))
-    assert db_session.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0005"
+    assert db_session.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0006"
     with denied(db_session, "permission denied for table alembic_version"):
         db_session.execute(text("UPDATE alembic_version SET version_num = 'x'"))
 

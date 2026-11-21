@@ -35,6 +35,8 @@ APPROVED = {
     "api_keys": {"SELECT", "INSERT", "UPDATE"},
     "refresh_tokens": {"SELECT", "INSERT", "UPDATE"},
     "invitation_tokens": {"SELECT", "INSERT", "UPDATE"},
+    "mfa_totp_factors": {"SELECT", "INSERT", "UPDATE"},
+    "mfa_recovery_codes": {"SELECT", "INSERT", "UPDATE"},
 }
 
 
