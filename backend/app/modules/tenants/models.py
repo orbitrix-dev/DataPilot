@@ -22,6 +22,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     PrimaryKeyConstraint,
     String,
     Text,
@@ -29,7 +30,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import INET, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, INET, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, Timestamps, UUIDPrimaryKey, check_in
@@ -179,4 +180,54 @@ class TenantSettings(Timestamps, Base):
             f"session_timeout_hours IN ({', '.join(map(str, SESSION_TIMEOUT_HOURS))})",
             name="session_timeout_hours_valid",
         ),
+    )
+
+
+API_KEY_SCOPES = ("insights:read", "trust:read", "connect:read", "automate:read", "intelligence:query")
+
+
+class ApiKey(UUIDPrimaryKey, Timestamps, Base):
+    """A tenant API key for non-browser clients. Only an HMAC-SHA256 digest of the secret is stored, under the
+    server-side pepper version recorded in ``pepper_version``; the secret itself is shown once, at creation."""
+
+    __tablename__ = "api_keys"
+
+    # The id the API exposes ("key-9f2a" for the demo keys, "key_<12 hex>" for new ones).
+    public_id: Mapped[str] = mapped_column(String(40), unique=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="RESTRICT"))
+    name: Mapped[str] = mapped_column(String(80))
+    # Display-only hint ("dp_live_••••9f2a"): never enough to reconstruct the secret.
+    prefix: Mapped[str] = mapped_column(String(32))
+    secret_hash: Mapped[bytes] = mapped_column(LargeBinary, unique=True)
+    pepper_version: Mapped[str] = mapped_column(String(32))
+    scopes: Mapped[list[str]] = mapped_column(ARRAY(String(40)))
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_by_name: Mapped[str] = mapped_column(String(120))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+    __table_args__ = (
+        CheckConstraint(r"public_id ~ '^[a-z0-9][a-z0-9_-]{1,39}$'", name="public_id_format"),
+        CheckConstraint("octet_length(secret_hash) = 32", name="secret_hash_is_digest"),
+        CheckConstraint("cardinality(scopes) >= 1", name="has_scopes"),
+        CheckConstraint(
+            "scopes <@ ARRAY[" + ", ".join(f"'{s}'" for s in API_KEY_SCOPES) + "]::varchar[]", name="scopes_known"
+        ),
+        CheckConstraint("length(btrim(name)) > 0", name="name_not_blank"),
+        CheckConstraint("expires_at IS NULL OR expires_at > created_at", name="expires_after_creation"),
+        # One active key per name per tenant (the existing "An active key already has this name" rule).
+        Index(
+            "uq_api_keys_tenant_id_active_name",
+            "tenant_id",
+            func.lower(text("name")),
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
+        Index(None, "tenant_id", "created_at"),
     )

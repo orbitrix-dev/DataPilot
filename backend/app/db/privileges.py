@@ -27,6 +27,9 @@ RUNTIME_TABLE_PRIVILEGES: dict[str, frozenset[str]] = {
     "user_sessions": frozenset({"SELECT", "INSERT", "UPDATE"}),
     "audit_events": frozenset({"SELECT", "INSERT"}),
     "alembic_version": frozenset({"SELECT"}),
+    "api_keys": frozenset({"SELECT", "INSERT", "UPDATE"}),  # revocation and last_used_at are updates; no deletes
+    "refresh_tokens": frozenset({"SELECT", "INSERT", "UPDATE"}),  # rotation marks used / revoked; no deletes
+    "invitation_tokens": frozenset({"SELECT", "INSERT", "UPDATE"}),  # acceptance marks used; no deletes
 }
 
 
