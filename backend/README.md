@@ -15,7 +15,7 @@ From the repository root:
 
 ```bash
 cp .env.example .env
-# Edit .env: replace every "change-me-local-only" with one password of your choice (3 places).
+# Edit .env: replace "change-me-owner-local-only" (owner) and "change-me-app-local-only" (runtime user) everywhere.
 docker compose up -d --wait postgres     # PostgreSQL 18 on 127.0.0.1:5432; returns once the health check passes
 cd backend
 uv sync --locked                         # creates .venv with exactly the versions in uv.lock
@@ -27,6 +27,9 @@ uv run uvicorn app.main:app --reload --port 8000
 - API: `http://localhost:8000/api/v1`
 - Interactive docs: `http://localhost:8000/api/v1/docs`
 - Liveness: `http://localhost:8000/healthz` (never touches the database)
+- **Two database users:** migrations run as the owner (`DP_MIGRATION_DATABASE_URL`), and the API connects as the least-privilege `datapilot_app` (`DP_DATABASE_URL`). That user owns nothing and has no DDL rights. See [docs/DATABASE.md](../docs/DATABASE.md#database-roles-stage-3a1).
+- **Upgrading a volume created before Stage 3A.1:** add `POSTGRES_APP_USER`, `POSTGRES_APP_PASSWORD` and the new URLs from `.env.example` to `.env`. Then run `docker compose up -d postgres` and `docker compose exec postgres /docker-entrypoint-initdb.d/02-create-app-role.sh` once, before `alembic upgrade head`.
+- **Production is blocked:** with `DP_ENV=prod` the API refuses to start until audit retention is enforced. See [Production blockers](../docs/DATABASE.md#production-blockers).
 - Database readiness: `http://localhost:8000/healthz/db`, which returns `200 {"status":"ok","database":"ok","latency_ms":…}`, or `503` with `"database": "not_configured"` or `"unreachable"`
 
 Day to day: `docker compose up -d --wait postgres`, then the `uvicorn` line. `docker compose down` stops PostgreSQL and keeps the data; `docker compose down -v` **deletes all local database data**.
@@ -49,8 +52,9 @@ Read from `DP_*` environment variables, then the repo-root `.env` (shared with D
 |---|---|---|
 | `DP_ENV` | `dev` | `dev` \| `test` \| `prod` |
 | `DP_DATABASE_URL` | none | `postgresql+psycopg://user:pass@host:5432/db`. **Required in prod.** Never printed: it's a `SecretStr`. Empty means unset |
-| `DP_MIGRATION_DATABASE_URL` | `DP_DATABASE_URL` | Used only by Alembic. Set it to migrate as a schema-owner role while the API uses a less-privileged one |
-| `DP_TEST_DATABASE_URL` | none | Test suite only. The database name must end in `_test` |
+| `DP_MIGRATION_DATABASE_URL` | none | **The owner**, used only by Alembic. Must be a different user from `DP_DATABASE_URL` (migration `0003` refuses otherwise) |
+| `DP_TEST_DATABASE_URL` / `DP_TEST_MIGRATION_DATABASE_URL` | none | Test suite only: the runtime user and the owner. Database names must end in `_test` |
+| `DP_TRUSTED_PROXIES` | empty | Comma-separated IPs/CIDRs of reverse proxies whose `X-Forwarded-For` is trusted. Empty = never trust forwarded headers. An invalid value stops startup |
 | `DP_DB_POOL_SIZE` / `DP_DB_MAX_OVERFLOW` | `5` / `10` | Per process. Keep (`pool_size` + `max_overflow`) × processes under the server's `max_connections` |
 | `DP_DB_POOL_TIMEOUT_SECONDS` | `10` | Wait for a free pooled connection before failing with 503 |
 | `DP_DB_POOL_RECYCLE_SECONDS` | `1800` | Replace connections older than this |
@@ -135,6 +139,8 @@ How migrations run:
 | `/healthz/db` returns `{"database": "not_configured"}` | `DP_DATABASE_URL` is empty or missing in `.env`. |
 | `uv sync --locked` fails with `The lockfile needs to be updated` | `pyproject.toml` changed without updating `uv.lock`. Run `uv lock`, review the diff, and commit both. |
 | Every request returns `401 Unknown tenant 'acme'` | The database has no demo tenant. Run `uv run alembic upgrade head` and `uv run python -m app.cli seed-demo`. |
+| `Migration 0003 needs a separate runtime user` / `Runtime user "datapilot_app" does not exist` | `.env` still has one user for everything. Add the app user and URLs from `.env.example` and run `02-create-app-role.sh` (see Run it). |
+| Tests fail with `permission denied for table …` in your own new test | The app side of the tests runs as `datapilot_app`, by design. Use the `owner_session`/`owner_database` fixtures only for migration and constraint tests and cleanup. |
 | `Can't locate revision identified by '…'` | The database was migrated from another branch whose migration files aren't in your checkout. Switch back and `alembic downgrade base`, or, for disposable dev data, `docker compose down -v`. |
 | A migration fails with `canceling statement due to lock timeout` | Another transaction holds a lock on the table. Retry when it finishes, or raise `DP_DB_MIGRATION_LOCK_TIMEOUT_MS` for that run. |
 

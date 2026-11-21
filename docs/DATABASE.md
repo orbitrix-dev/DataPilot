@@ -1,8 +1,14 @@
-# Database schema (Stages 2A–2B)
+# Database schema (Stages 2A–3A.1)
 
 PostgreSQL 16+ (developed on 18), managed only by Alembic (`backend/migrations/`). ORM models live in `backend/app/modules/*/models.py` and must match the migrations; `uv run alembic check` and `tests/test_core_migration.py` enforce it.
 
-**Status (Stage 2B):** the **Tenants module runs on PostgreSQL**: tenants, members, sessions, workspace settings and the permission matrix. Request authentication (dev headers, and API keys' tenants) resolves against it. API contracts, readable IDs (`acme`, `u-elena`, `sess-1`) and error messages are unchanged. **Still in memory:** API keys, Connect, Trust, Automate, Billing, Notifications and the audit log.
+**Status (Stage 3A.1):**
+- **On PostgreSQL:** the Tenants module (tenants, members, sessions, workspace settings, permission matrix) and the **audit log**. Request authentication resolves against it.
+- **Unchanged:** API contracts, readable IDs (`acme`, `u-elena`, `sess-1`) and error messages. The one exception is audit event `id`s, which are now UUIDv7 strings.
+- **Still in memory:** API keys, Connect, Trust, Automate, Billing and Notifications.
+- **The application connects as a least-privilege runtime user**, `datapilot_app`. See [Database roles](#database-roles-stage-3a1).
+
+> **Production is blocked.** The API refuses to start with `DP_ENV=prod` until audit retention is enforced. See [Production blockers](#production-blockers).
 
 ## Entity relationships
 
@@ -234,3 +240,123 @@ uv run python -m app.cli seed-demo
 - **Demo sessions can't authenticate.** Each stores the SHA-256 of a fresh random token that's discarded immediately. They're listed for 30 days after seeding (`expires_at`).
 - **The API needs it.** With Tenants on PostgreSQL, the API serves the demo only after `alembic upgrade head` and `seed-demo`. Until then, dev requests get `401 Unknown tenant 'acme'`.
 - **Never in production:** the command refuses to run when `DP_ENV=prod`. It isn't part of migrations.
+
+
+## Audit log (Stage 3A.1)
+
+```mermaid
+erDiagram
+  tenants |o--o{ audit_events : "records (NULL tenant = global/security event)"
+  audit_events {
+    uuid id PK "UUIDv7 from the application, no DB default"
+    uuid tenant_id FK "NULL for global events; ON DELETE RESTRICT"
+    timestamptz occurred_at
+    varchar action "e.g. user.invited"
+    varchar category "generated: split_part(action, '.', 1)"
+    varchar actor_type "user | api_key | system | anonymous"
+    varchar actor_id "readable public id, NOT a foreign key"
+    varchar actor_label "display-name snapshot"
+    varchar resource_type
+    varchar resource_id
+    text summary
+    inet ip_address "validated IPs only"
+    varchar client_label "non-IP identifiers, e.g. testclient"
+    jsonb metadata "allowlisted per action"
+  }
+```
+
+- **Indexes:**
+  - `(tenant_id, occurred_at DESC, id)` for the list;
+  - `(tenant_id, category, occurred_at DESC, id)` for `?type=`;
+  - partial `occurred_at DESC WHERE tenant_id IS NULL` for global events.
+- **CHECKs:** action format; category among the 8 API types; the actor id is required unless `system`/`anonymous`; a resource id needs a type; never both `ip_address` and `client_label`; metadata is a JSON object of at most 8 KB; no API-key secret in `summary` or `metadata`.
+- **API mapping:**
+  - `type` is the category, `event` is the action's registry label, `actor` is `actor_label`, `detail` is `summary`, `ip` is the address or client label, `target` is `resource_type[:resource_id]`.
+  - The list is newest first, with equal times in insertion order.
+  - The API never returns another tenant's events or global events.
+
+### Append-only
+
+| Layer | Protects against |
+|---|---|
+| Repository has only `append` and `search` | Ordinary code paths |
+| `datapilot_app` has only `SELECT, INSERT` on `audit_events` | A compromised or buggy app: `permission denied` for UPDATE, DELETE and TRUNCATE |
+| Trigger `audit_events_append_only` / `audit_events_no_truncate` | Everyone, the owner included. Only the owner can deliberately disable it (not covered: that would need off-database or write-once storage) |
+| `tenant_id` FK with `ON DELETE RESTRICT` | Tenant deletion silently cascading into, or nulling, audit history |
+
+### Action registry and guarantees
+
+`backend/app/modules/audit/actions.py` lists every action (21) with a label, a metadata allowlist and three declarations:
+
+| Declaration | Values | Meaning |
+|---|---|---|
+| `business_store` | `postgres` / `memory` | where the state the event describes lives |
+| `durability` | `durable` / `transitional` | durable: the change and its event commit or roll back together. Transitional: see below |
+| `production_enabled` | true / false | production may perform the action. Memory-backed actions are always false |
+
+**PostgreSQL-backed actions (12 Tenants actions): atomic.** The event is written in the request's own transaction. A rollback or failed commit leaves neither the change nor the event.
+
+**Memory-backed actions (8): transitional. They are not atomic, and their business state is not durable.** They are `api-key.created` and `api-key.revoked` (keys are in memory until 3A.2), `workflow.approved`/`rejected`, `billing.plan_changed`/`plan_change_requested`, `connection.credential_rotated` and `settings.notifications_changed`. Each of them, tested:
+1. **No phantom success events:** the event is written after the in-memory change succeeds, and stored only if the request commits.
+2. **Events can be missing:** if the request fails after the in-memory change, the change remains without its event.
+3. **The change isn't durable:** after a restart the in-memory change is gone; its event remains.
+
+They work in development and testing. In production, recording them is refused, and startup fails if any of them is marked production-enabled. An action becomes `postgres`/`durable`/production-enabled only when its module moves to PostgreSQL and its atomicity tests pass.
+
+**Metadata:** each action's allowlist names the exact keys and types (short strings, integers, booleans, short string lists). Anything else is **rejected**, not silently dropped. Secret-looking substrings in summaries, resource ids and metadata strings are then redacted: `dp_live_…` with hex, `Bearer …`, `$argon2…`, and runs of 32+ hex characters. Database CHECKs are the last line of defence. Request bodies, headers, cookies, tokens and MFA codes are never recorded.
+
+### Security events that must survive a failed request
+
+`SecurityAuditWriter` (`backend/app/modules/audit/security_writer.py`) writes events such as a rejected API key in an **independent transaction**, on its **own two-connection pool**, and commits immediately. It survives the request's rollback, and it never raises: failures are logged without the event's contents. It's built and tested, but **not wired into any request path yet.** Stage 3B connects it to rejected keys and failed sign-ins together with rate limiting, so unauthenticated floods can't fill the log.
+
+### Client addresses and IP data
+
+- **`X-Forwarded-For`** is honoured only when the direct peer is in `DP_TRUSTED_PROXIES` (empty by default, so it's never trusted).
+  - The chain is walked right to left, skipping trusted proxies; the first untrusted address is the client.
+  - A malformed chain (non-IP entries, ports, empty entries, more than 32 hops, over 2 KB) is ignored entirely.
+  - `Forwarded` and `X-Real-IP` are ignored.
+- **Storage:** IPs go in `ip_address` (INET), anything else in `client_label`.
+- **IP addresses, names and emails in audit records are personal data.** They're kept until retention is enforced (see below).
+
+### Retention: NOT enforced
+
+Tenants have an `audit_retention_days` setting (90 or 365). **It is stored but not enforced**: nothing purges expired events yet. Purging needs a dedicated owner-run procedure, because the runtime user can't delete audit rows and the trigger blocks deletes for everyone. Until that exists and is tested, production is blocked.
+
+## Database roles (Stage 3A.1)
+
+| | Owner (e.g. `datapilot`) | Runtime (`datapilot_app`) |
+|---|---|---|
+| Used through | `DP_MIGRATION_DATABASE_URL`: Alembic, test fixtures, test cleanup | `DP_DATABASE_URL`: the API, `seed-demo`, the app side of every test |
+| Owns | every table, function and trigger | **nothing** (verified by `0003` and by tests) |
+| Attributes | | `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`; `USAGE` on schema `public`, no `CREATE` |
+
+The two must be **different users in every environment.** Migration `0003` refuses a single-user setup.
+
+| Table | SELECT | INSERT | UPDATE | DELETE | Why |
+|---|:-:|:-:|:-:|:-:|---|
+| `tenants` | ✓ | ✓ | ✓ | | soft delete only |
+| `tenant_settings` | ✓ | ✓ | ✓ | | |
+| `users` | ✓ | ✓ | ✓ | | no code path deletes users |
+| `tenant_memberships` | ✓ | ✓ | ✓ | ✓ | revoking a member deletes the membership |
+| `roles` | ✓ | ✓ | ✓ | | |
+| `role_permissions` | ✓ | ✓ | | ✓ | matrix edits delete removed grants |
+| `permissions` | ✓ | | | | catalog managed by migrations; the seed never writes it |
+| `user_sessions` | ✓ | ✓ | ✓ | | revocation sets `revoked_at`; deletes only cascade from memberships |
+| `audit_events` | ✓ | ✓ | | | append-only. No TRUNCATE, TRIGGER or REFERENCES |
+| `alembic_version` | ✓ | | | | schema-revision reporting |
+
+- **Owner rights for referential actions:** cascades (a membership delete removing its sessions) and foreign-key checks (`role_permissions` → `permissions`) run with the table owner's rights. The runtime user needs neither `DELETE` on `user_sessions` nor `REFERENCES` on `permissions`. Both are tested.
+- **No default privileges:** a new table gets nothing until its migration grants it. A test compares the live grants with this matrix.
+
+## UUIDv7 everywhere (Stage 3A.1)
+
+- **Application only:** every id is a UUIDv7 generated by the application.
+- **No database default:** migration `0003` dropped the `gen_random_uuid()` (UUIDv4) defaults `0001` had put on `tenants`, `users`, `roles`, `tenant_memberships` and `user_sessions`, and `audit_events` never had one. An insert without an id fails instead of silently getting a v4 id (tested).
+- **Seed:** demo audit events use **deterministic** UUIDv7s (the event's time + a fixed label), which keeps seeding idempotent.
+- **Downgrade:** downgrading `0003` restores the original defaults.
+
+## Production blockers
+
+`backend/app/core/readiness.py` runs at startup with `DP_ENV=prod` and refuses to start while any of these hold. Each is derived from the code itself; there's **no configuration switch** to bypass them:
+1. **Audit retention is not enforced** (`audit.retention.is_enforced()` is false).
+2. **An action is production-enabled while memory-backed or transitional.**

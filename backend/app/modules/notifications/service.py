@@ -58,10 +58,10 @@ def set_preference(ctx: RequestContext, category: Category, enabled: bool) -> li
         repo.put(p)
         audit.record(
             ctx,
-            "settings",
-            "Notifications Changed",
+            "settings.notifications_changed",
             f"{'Enabled' if enabled else 'Disabled'} {LABELS[category]}",
-            "notifications",
+            resource=("notifications", None),
+            metadata={"category": category, "enabled": enabled},
         )
     return list_preferences(ctx)
 

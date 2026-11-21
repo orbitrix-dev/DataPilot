@@ -35,7 +35,11 @@ def rotate_credentials(ctx: RequestContext, connection_id: str, body: RotateIn) 
         c.status, c.issue = "healthy", None
     repo.connections.put(c)
     audit.record(
-        ctx, "connection", "Credential Rotated", f"Rotated the read-only credential on {c.name}", f"connection:{c.id}"
+        ctx,
+        "connection.credential_rotated",
+        f"Rotated the read-only credential on {c.name}",
+        resource=("connection", c.id),
+        metadata={"connection_id": c.id},
     )
     return _out(c)
 

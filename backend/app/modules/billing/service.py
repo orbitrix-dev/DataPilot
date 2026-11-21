@@ -56,10 +56,10 @@ def change_plan(ctx: RequestContext, body: PlanChangeIn, can_manage_billing: boo
         ctx.data.billing.subscription.put(s)
         audit.record(
             ctx,
-            "billing",
-            "Plan Changed",
+            "billing.plan_changed",
             f"{current.name} → {target.name} (${target.price_usd:,} / month, prorated)",
-            "billing",
+            resource=("billing", None),
+            metadata={"from_plan": current.id, "to_plan": target.id},
         )
         status = "changed"
     else:
@@ -67,10 +67,10 @@ def change_plan(ctx: RequestContext, body: PlanChangeIn, can_manage_billing: boo
         ctx.data.billing.subscription.put(s)
         audit.record(
             ctx,
-            "billing",
-            "Plan Change Requested",
+            "billing.plan_change_requested",
             f"Asked {tenants.owner(ctx).name} to move to {target.name}",
-            "billing",
+            resource=("billing", None),
+            metadata={"to_plan": target.id},
         )
         status = "requested"
     return PlanChangeOut(status=status, subscription=get_subscription(ctx))

@@ -4,8 +4,9 @@
 #   backend   locked install, PostgreSQL readiness, Alembic upgrade + drift check, pytest, Ruff lint + format
 #   frontend  production build from the committed lockfile; fails if the build modifies tracked files
 #
-# No repository secrets are used. The PostgreSQL service is an ephemeral container on the runner; its password
-# is a throwaway CI-only value, never a real credential.
+# No repository secrets are used. The PostgreSQL service is an ephemeral container on the runner; its passwords
+# are throwaway CI-only values, never real credentials. As in every environment, migrations run as the owner
+# (datapilot) and the application and tests connect as the least-privilege runtime user (datapilot_app).
 
 name: CI
 
@@ -46,8 +47,10 @@ jobs:
           --health-retries 20
     env:
       DP_ENV: test
-      DP_DATABASE_URL: postgresql+psycopg://datapilot:ci-only-throwaway@localhost:5432/datapilot
-      DP_TEST_DATABASE_URL: postgresql+psycopg://datapilot:ci-only-throwaway@localhost:5432/datapilot_test
+      DP_DATABASE_URL: postgresql+psycopg://datapilot_app:ci-only-app@localhost:5432/datapilot
+      DP_MIGRATION_DATABASE_URL: postgresql+psycopg://datapilot:ci-only-throwaway@localhost:5432/datapilot
+      DP_TEST_DATABASE_URL: postgresql+psycopg://datapilot_app:ci-only-app@localhost:5432/datapilot_test
+      DP_TEST_MIGRATION_DATABASE_URL: postgresql+psycopg://datapilot:ci-only-throwaway@localhost:5432/datapilot_test
       PGHOST: localhost
       PGUSER: datapilot
       PGPASSWORD: ci-only-throwaway
@@ -66,14 +69,17 @@ jobs:
       - name: Install dependencies (locked)
         run: uv sync --locked
 
-      - name: Wait for PostgreSQL and create the test database
+      - name: Wait for PostgreSQL, create the test database and the runtime user
         run: |
           for attempt in $(seq 1 30); do
             pg_isready -d datapilot && break
             sleep 2
           done
           pg_isready -d datapilot
-          psql -d datapilot -v ON_ERROR_STOP=1 -c "CREATE DATABASE datapilot_test"
+          psql -d datapilot -v ON_ERROR_STOP=1 \
+            -c "CREATE DATABASE datapilot_test" \
+            -c "CREATE ROLE datapilot_app LOGIN PASSWORD 'ci-only-app' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS" \
+            -c "GRANT CONNECT ON DATABASE datapilot, datapilot_test TO datapilot_app"
 
       # Alembic arrives with the database-foundation branch; until then these steps are skipped.
       - name: Alembic upgrade head

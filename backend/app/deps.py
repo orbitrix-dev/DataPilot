@@ -12,8 +12,10 @@ membership of an active user is accepted; anything else → 401 "Unknown or inac
 
 Persistence boundary (transitional): ``TenantData.tenants`` (members, sessions, workspace settings, permission
 matrix) is PostgreSQL-backed and bound to this request's transaction. API keys, Connect, Trust, Automate, Billing,
-Notifications and the audit log stay in the in-memory registry, keyed by tenant slug. Audit events are published
-only after the transaction commits (``CommitGatedAuditRepository``).
+Notifications stay in the in-memory registry, keyed by tenant slug. The audit log is PostgreSQL-backed and written
+in this request's transaction (``PostgresAuditRepository``): an event commits or rolls back with the change.
+
+Client address: ``app/core/client_address.py`` (X-Forwarded-For only from ``DP_TRUSTED_PROXIES``).
 
 Authorization follows the tenant's live permission matrix (Admin → Permissions).
 """
@@ -22,15 +24,15 @@ from dataclasses import replace
 from typing import Annotated
 
 from fastapi import Depends, Header, Request
-from sqlalchemy import event, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core import clock
+from app.core import client_address, clock
 from app.core.config import Settings, get_settings
 from app.core.context import Principal, RequestContext
 from app.core.db import DbSession
 from app.core.errors import Forbidden, Unauthorized
-from app.modules.audit.repository import CommitGatedAuditRepository
+from app.modules.audit.repository import PostgresAuditRepository
 from app.modules.tenants import service as tenants
 from app.modules.tenants.models import Tenant
 from app.modules.tenants.pg_tables import PostgresTenantsRepository
@@ -58,12 +60,10 @@ def _request_data(db: Session, registry: Registry, slug: str, tenant: Tenant) ->
     if memory is None:
         # A tenant in the database without in-memory module data can't be served yet. Fail closed.
         raise Unauthorized(f"Unknown tenant {slug!r}")
-    audit = CommitGatedAuditRepository(memory.audit)
-    event.listen(db, "after_commit", lambda _session: audit.publish())
     return replace(
         memory,
         tenants=PostgresTenantsRepository.bind(db, tenant.id, api_keys=memory.tenants.api_keys),
-        audit=audit,
+        audit=PostgresAuditRepository(db, tenant.id),
     )
 
 
@@ -76,7 +76,11 @@ def get_ctx(
     x_datapilot_tenant: Annotated[str | None, Header()] = None,
     x_datapilot_user: Annotated[str | None, Header()] = None,
 ) -> RequestContext:
-    ip = request.client.host if request.client else "unknown"
+    ip = client_address.resolve(
+        request.client.host if request.client else None,
+        request.headers.getlist("x-forwarded-for"),
+        settings.trusted_proxy_networks,
+    )
 
     if authorization and authorization.startswith("Bearer dp_live_"):
         secret = authorization.removeprefix("Bearer ")
@@ -91,7 +95,15 @@ def get_ctx(
                     kind="api_key", id=key.id, name=f"API key {key.name}", scopes=frozenset(key.scopes)
                 )
                 data = _request_data(db, registry, slug, tenant)
-                return RequestContext(tenant_id=slug, principal=principal, data=data, ip=ip, tenant_uuid=tenant.id)
+                return RequestContext(
+                    tenant_id=slug,
+                    principal=principal,
+                    data=data,
+                    ip=ip,
+                    tenant_uuid=tenant.id,
+                    environment=settings.env,
+                )
+        # Stage 3B records this with SecurityAuditWriter (an independent transaction), once rate limiting exists.
         raise Unauthorized("Invalid or revoked API key")
 
     if not settings.dev_auth_enabled:
@@ -104,7 +116,9 @@ def get_ctx(
     if member is None:
         raise Unauthorized("Unknown or inactive user")
     principal = Principal(kind="user", id=member.id, name=member.name, role=member.role)
-    return RequestContext(tenant_id=slug, principal=principal, data=data, ip=ip, tenant_uuid=tenant.id)
+    return RequestContext(
+        tenant_id=slug, principal=principal, data=data, ip=ip, tenant_uuid=tenant.id, environment=settings.env
+    )
 
 
 Ctx = Annotated[RequestContext, Depends(get_ctx)]

@@ -73,7 +73,13 @@ def approve(ctx: RequestContext, request_id: str, body: ApproveIn) -> ApprovalRe
     detail = f"Approved {r.id} for {run.id} ({wf.name})" + (
         f". Trust warning acknowledged: {warning}" if warning else ""
     )
-    audit.record(ctx, "workflow", "Workflow Approved", detail, f"run:{run.id}")
+    audit.record(
+        ctx,
+        "workflow.approved",
+        detail,
+        resource=("run", run.id),
+        metadata={"request_id": r.id, "run_id": run.id, "acknowledged_issues": [i.reference for i in issues]},
+    )
     return _out(ctx, r)
 
 
@@ -86,10 +92,10 @@ def reject(ctx: RequestContext, request_id: str, body: RejectIn) -> ApprovalRequ
     repo.requests.put(r)
     audit.record(
         ctx,
-        "workflow",
-        "Workflow Rejected",
+        "workflow.rejected",
         f"Rejected {r.id} ({wf.name})" + (f": “{reason}”" if reason else ""),
-        f"request:{r.id}",
+        resource=("request", r.id),
+        metadata={"request_id": r.id, "reason": reason or ""},
     )
     return _out(ctx, r)
 

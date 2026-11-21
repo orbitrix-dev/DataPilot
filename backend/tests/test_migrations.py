@@ -35,11 +35,11 @@ def table() -> str:
     return f"mig_probe_{uuid4().hex[:8]}"
 
 
-HEAD = "0002"
+HEAD = "0003"
 
 
 @pytest.fixture
-def scripts(tmp_path: Path, migrated) -> Iterator[tuple[object, Write]]:
+def scripts(tmp_path: Path, migrated, owner_database) -> Iterator[tuple[object, Write]]:
     """(alembic Config seeing the real revisions plus those written by `write`, write(rev, down, up_sql, down_sql))."""
     cfg = alembic_config()
     cfg.set_main_option(
@@ -69,30 +69,30 @@ def scripts(tmp_path: Path, migrated) -> Iterator[tuple[object, Write]]:
         )
 
     yield cfg, write
-    # Leave the test database at the real head, as we found it, even if the test failed half-way.
+    # Leave the test owner_database at the real head, as we found it, even if the test failed half-way.
     command.downgrade(cfg, HEAD)
-    with migrated.session() as s:
+    with owner_database.session() as s:
         for (name,) in s.execute(text("SELECT tablename FROM pg_tables WHERE tablename LIKE 'mig_probe_%'")):
             s.execute(text(f'DROP TABLE "{name}"'))
 
 
-def revision(database) -> str | None:
-    with database.engine.connect() as conn:
+def revision(owner_database) -> str | None:
+    with owner_database.engine.connect() as conn:
         return MigrationContext.configure(conn).get_current_revision()
 
 
-def columns(database, table: str) -> list[str] | None:
-    insp = inspect(database.engine)
+def columns(owner_database, table: str) -> list[str] | None:
+    insp = inspect(owner_database.engine)
     return [c["name"] for c in insp.get_columns(table)] if insp.has_table(table) else None
 
 
 # ------------------------------------------------------------------ the repository's own configuration
 
 
-def test_repository_has_a_single_head_and_upgrading_again_is_a_no_op(migrated):
+def test_repository_has_a_single_head_and_upgrading_again_is_a_no_op(migrated, owner_database):
     assert ScriptDirectory.from_config(alembic_config()).get_heads() == [HEAD]
     command.upgrade(alembic_config(), "head")
-    assert revision(migrated) == HEAD
+    assert revision(owner_database) == HEAD
 
 
 def test_env_compares_the_application_metadata(migrated):
@@ -109,25 +109,25 @@ def test_env_compares_the_application_metadata(migrated):
 # ------------------------------------------------------------------ upgrade / downgrade
 
 
-def test_upgrade_and_downgrade_step_by_step(scripts, database, table):
+def test_upgrade_and_downgrade_step_by_step(scripts, owner_database, table):
     cfg, write = scripts
     write("a1", HEAD, f"CREATE TABLE {table} (id int PRIMARY KEY)", f"DROP TABLE {table}")
     write("a2", "a1", f"ALTER TABLE {table} ADD COLUMN note text", f"ALTER TABLE {table} DROP COLUMN note")
 
     command.upgrade(cfg, "head")
-    assert revision(database) == "a2" and columns(database, table) == ["id", "note"]
+    assert revision(owner_database) == "a2" and columns(owner_database, table) == ["id", "note"]
 
     command.downgrade(cfg, "-1")
-    assert revision(database) == "a1" and columns(database, table) == ["id"]
+    assert revision(owner_database) == "a1" and columns(owner_database, table) == ["id"]
 
     command.downgrade(cfg, HEAD)
-    assert revision(database) == HEAD and columns(database, table) is None
+    assert revision(owner_database) == HEAD and columns(owner_database, table) is None
 
     command.upgrade(cfg, "head")  # and back up again
-    assert revision(database) == "a2"
+    assert revision(owner_database) == "a2"
 
 
-def test_a_failed_migration_leaves_the_database_untouched(scripts, database, table):
+def test_a_failed_migration_leaves_the_database_untouched(scripts, owner_database, table):
     """All pending migrations share one transaction: when the second fails, the first is rolled back too."""
     cfg, write = scripts
     write("b1", HEAD, f"CREATE TABLE {table} (id int)", f"DROP TABLE {table}")
@@ -135,16 +135,16 @@ def test_a_failed_migration_leaves_the_database_untouched(scripts, database, tab
 
     with pytest.raises(Exception, match="division by zero"):
         command.upgrade(cfg, "head")
-    assert revision(database) == HEAD
-    assert columns(database, table) is None
+    assert revision(owner_database) == HEAD
+    assert columns(owner_database, table) is None
 
 
-def test_migrations_actually_commit(scripts, database, table):
+def test_migrations_actually_commit(scripts, owner_database, table):
     """Guards the bug where a statement in env.py autobegins a transaction Alembic never commits."""
     cfg, write = scripts
     write("c1", HEAD, f"CREATE TABLE {table} (id int)", f"DROP TABLE {table}")
     command.upgrade(cfg, "head")
-    with database.engine.connect() as conn:  # a new connection only sees committed work
+    with owner_database.engine.connect() as conn:  # a new connection only sees committed work
         assert conn.execute(text(f"SELECT count(*) FROM {table}")).scalar_one() == 0
         assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "c1"
 
@@ -153,7 +153,7 @@ def test_migrations_actually_commit(scripts, database, table):
 
 
 @pytest.mark.parametrize(("env_ms", "expected"), [(None, "10s"), ("2500", "2500ms")])
-def test_migrations_run_with_a_lock_timeout(scripts, database, table, monkeypatch, env_ms, expected):
+def test_migrations_run_with_a_lock_timeout(scripts, owner_database, table, monkeypatch, env_ms, expected):
     if env_ms is not None:
         monkeypatch.setenv("DP_DB_MIGRATION_LOCK_TIMEOUT_MS", env_ms)
     cfg, write = scripts
@@ -164,17 +164,17 @@ def test_migrations_run_with_a_lock_timeout(scripts, database, table, monkeypatc
         f"DROP TABLE {table}",
     )
     command.upgrade(cfg, "head")
-    with database.engine.connect() as conn:
+    with owner_database.engine.connect() as conn:
         assert conn.execute(text(f"SELECT value FROM {table}")).scalar_one() == expected
 
 
-def test_migration_url_takes_precedence_over_the_app_url(scripts, database, table, monkeypatch):
-    monkeypatch.setenv("DP_MIGRATION_DATABASE_URL", os.environ["DP_DATABASE_URL"])
+def test_migration_url_takes_precedence_over_the_app_url(scripts, owner_database, table, monkeypatch):
+    monkeypatch.setenv("DP_MIGRATION_DATABASE_URL", os.environ["DP_MIGRATION_DATABASE_URL"])
     monkeypatch.setenv("DP_DATABASE_URL", UNREACHABLE)  # would fail if env.py used it
     cfg, write = scripts
     write("e1", HEAD, f"CREATE TABLE {table} (id int)", f"DROP TABLE {table}")
     command.upgrade(cfg, "head")
-    assert revision(database) == "e1"
+    assert revision(owner_database) == "e1"
 
 
 def test_migrations_refuse_to_run_without_a_database_url(scripts, monkeypatch):

@@ -91,7 +91,13 @@ def invite(ctx: RequestContext, body: InviteIn) -> Member:
     )
     # The stored member: an existing user (e.g. a member of another tenant) keeps their own id.
     member = repo.members.put(member)
-    audit.record(ctx, "user", "User Invited", f"Invited {body.email} as {ROLE_LABEL[body.role]}", f"member:{member.id}")
+    audit.record(
+        ctx,
+        "user.invited",
+        f"Invited {body.email} as {ROLE_LABEL[body.role]}",
+        resource=("member", member.id),
+        metadata={"email": body.email, "role": body.role},
+    )
     return member
 
 
@@ -115,10 +121,10 @@ def change_role(ctx: RequestContext, member_id: str, body: RoleChangeIn) -> Memb
     ctx.data.tenants.members.put(m)
     audit.record(
         ctx,
-        "permission",
-        "Role Changed",
+        "permission.role_changed",
         f"Updated {_label(m)} from {ROLE_LABEL[before]} to {ROLE_LABEL[body.role]}",
-        f"member:{m.id}",
+        resource=("member", m.id),
+        metadata={"from_role": before, "to_role": body.role},
     )
     return m
 
@@ -131,10 +137,15 @@ def revoke(ctx: RequestContext, member_id: str) -> None:
         if s.member_id == m.id:
             repo.sessions.delete(s.id)
     if m.status == "invited":
-        audit.record(ctx, "user", "Invitation Cancelled", f"Cancelled the invitation for {m.email}")
+        audit.record(
+            ctx, "user.invitation_cancelled", f"Cancelled the invitation for {m.email}", metadata={"email": m.email}
+        )
     else:
         audit.record(
-            ctx, "user", "Access Revoked", f"Revoked {m.name}'s access ({ROLE_LABEL[m.role]}) and ended their sessions"
+            ctx,
+            "user.access_revoked",
+            f"Revoked {m.name}'s access ({ROLE_LABEL[m.role]}) and ended their sessions",
+            metadata={"role": m.role},
         )
 
 
@@ -156,7 +167,7 @@ def get_matrix(ctx: RequestContext) -> list[MatrixRow]:
 
 def save_matrix(ctx: RequestContext, values: Matrix) -> list[MatrixRow]:
     ws = workspace(ctx)
-    changes: list[str] = []
+    changes: list[tuple[str, dict[str, str]]] = []
     for cap, levels in CAPABILITY_LEVELS.items():
         row = values.get(cap, {})
         for role in ROLE_IDS:
@@ -168,11 +179,16 @@ def save_matrix(ctx: RequestContext, values: Matrix) -> list[MatrixRow]:
                 raise Forbidden("The Organization Owner always keeps full access")
             if after != before:
                 ws.matrix[cap][role] = after
-                changes.append(f"{ROLE_LABEL[role]} · {CAPABILITY_LABEL[cap]}: {before} → {after}")
+                changes.append(
+                    (
+                        f"{ROLE_LABEL[role]} · {CAPABILITY_LABEL[cap]}: {before} → {after}",
+                        {"role": role, "capability": cap, "from_level": before, "to_level": after},
+                    )
+                )
     if changes:
         ctx.data.tenants.workspace.put(ws)
-        for c in changes:
-            audit.record(ctx, "permission", "Permission Changed", c, "permissions")
+        for summary, detail in changes:
+            audit.record(ctx, "permission.matrix_changed", summary, resource=("permissions", None), metadata=detail)
     return get_matrix(ctx)
 
 
@@ -195,7 +211,13 @@ def set_policy(ctx: RequestContext, body: SecurityPolicy) -> SecurityPolicy:
     ws.policy = body
     ctx.data.tenants.workspace.put(ws)
     for k in changed:
-        audit.record(ctx, "settings", "Security Policy Changed", labels[k](getattr(body, k)), "security")
+        audit.record(
+            ctx,
+            "settings.security_policy_changed",
+            labels[k](getattr(body, k)),
+            resource=("security", None),
+            metadata={"setting": k, "value": str(getattr(body, k))},
+        )
     return body
 
 
@@ -212,10 +234,10 @@ def revoke_session(ctx: RequestContext, session_id: str) -> None:
     repo.sessions.delete(s.id)
     audit.record(
         ctx,
-        "login",
-        "Session Revoked",
+        "login.session_revoked",
         f"Ended {who.name if who else s.member_id}'s session ({s.device}, {s.ip})",
-        "security",
+        resource=("security", None),
+        metadata={"session_id": s.id, "device": s.device},
     )
 
 
@@ -248,10 +270,10 @@ def create_key(ctx: RequestContext, body: ApiKeyCreateIn) -> ApiKeyCreated:
     repo.api_keys.put(key)
     audit.record(
         ctx,
-        "api-key",
-        "API Key Created",
+        "api-key.created",
         f"Created {name}, prefix {key.prefix} ({', '.join(key.scopes)})",
-        f"api-key:{key.id}",
+        resource=("api-key", key.id),
+        metadata={"name": name, "prefix": key.prefix, "scopes": list(key.scopes)},
     )
     return ApiKeyCreated(key=_out(key), secret=secret)
 
@@ -263,7 +285,13 @@ def revoke_key(ctx: RequestContext, key_id: str) -> ApiKeyOut:
         return _out(k)
     k.revoked_at = clock.now()
     repo.api_keys.put(k)
-    audit.record(ctx, "api-key", "API Key Revoked", f"Revoked {k.name} ({k.prefix})", f"api-key:{k.id}")
+    audit.record(
+        ctx,
+        "api-key.revoked",
+        f"Revoked {k.name} ({k.prefix})",
+        resource=("api-key", k.id),
+        metadata={"name": k.name, "prefix": k.prefix},
+    )
     return _out(k)
 
 
@@ -294,7 +322,13 @@ def save_org(ctx: RequestContext, body: OrgSettings) -> OrgSettings:
     ws.org = body
     ctx.data.tenants.workspace.put(ws)
     for k, before, after in changed:
-        audit.record(ctx, "settings", "Organization Updated", f"{labels[k]}: {before} → {after}", "organization")
+        audit.record(
+            ctx,
+            "settings.organization_updated",
+            f"{labels[k]}: {before} → {after}",
+            resource=("organization", None),
+            metadata={"field": k, "from_value": str(before), "to_value": str(after)},
+        )
     return body
 
 
@@ -314,10 +348,10 @@ def schedule_deletion(ctx: RequestContext, confirm_name: str) -> Workspace:
         ctx.data.tenants.workspace.put(ws)
         audit.record(
             ctx,
-            "settings",
-            "Deletion Scheduled",
+            "settings.deletion_scheduled",
             f"Scheduled {ws.org.name} for permanent deletion on {ws.deletion_scheduled_for:%b %d, %Y}",
-            "organization",
+            resource=("organization", None),
+            metadata={"scheduled_for": ws.deletion_scheduled_for.isoformat()},
         )
     return ws
 
@@ -328,6 +362,9 @@ def cancel_deletion(ctx: RequestContext) -> Workspace:
         ws.deletion_scheduled_for = None
         ctx.data.tenants.workspace.put(ws)
         audit.record(
-            ctx, "settings", "Deletion Cancelled", f"Cancelled the scheduled deletion of {ws.org.name}", "organization"
+            ctx,
+            "settings.deletion_cancelled",
+            f"Cancelled the scheduled deletion of {ws.org.name}",
+            resource=("organization", None),
         )
     return ws
