@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from app.core.security import Keyring
     from app.modules.tenants.schemas import RoleId
     from app.tenant_data import TenantData
 
@@ -35,3 +36,4 @@ class RequestContext:
     ip: str  # resolved client address (app/core/client_address.py): an IP, or a label such as "testclient"
     tenant_uuid: uuid.UUID | None = None
     environment: str = "dev"  # DP_ENV; production refuses audit actions that aren't production-enabled
+    api_key_keyring: Keyring | None = None  # the API-key pepper keyring (None in contexts without configuration)

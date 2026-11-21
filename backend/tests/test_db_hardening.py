@@ -32,6 +32,9 @@ APPROVED = {
     "user_sessions": {"SELECT", "INSERT", "UPDATE"},
     "audit_events": {"SELECT", "INSERT"},
     "alembic_version": {"SELECT"},
+    "api_keys": {"SELECT", "INSERT", "UPDATE"},
+    "refresh_tokens": {"SELECT", "INSERT", "UPDATE"},
+    "invitation_tokens": {"SELECT", "INSERT", "UPDATE"},
 }
 
 

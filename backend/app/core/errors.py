@@ -40,6 +40,13 @@ class Conflict(DomainError):
     code = "conflict"
 
 
+class Unprocessable(DomainError):
+    """A well-formed request the service rejects on business rules (e.g. a password equal to the email address)."""
+
+    status_code = 422
+    code = "unprocessable"
+
+
 class NotImplementedYet(DomainError):
     status_code = 501
     code = "not_implemented"

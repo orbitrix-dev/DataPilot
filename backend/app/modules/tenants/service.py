@@ -1,11 +1,11 @@
-import hashlib
 import secrets
 from datetime import timedelta
 from uuid import uuid4
 
 from app.core import clock
 from app.core.context import RequestContext
-from app.core.errors import Conflict, Forbidden, NotFound
+from app.core.errors import Conflict, Forbidden, NotFound, ServiceUnavailable
+from app.core.security import api_key_digest
 from app.modules.audit import service as audit
 from app.modules.billing.schemas import PLANS
 
@@ -49,10 +49,6 @@ def me(ctx: RequestContext) -> Me:
         raise Forbidden("API keys have no member profile")
     member = ctx.data.tenants.members.get(ctx.principal.id)
     return Me(tenant_id=ctx.tenant_id, member=member, permissions=permissions_for(workspace(ctx), member.role))
-
-
-def hash_secret(secret: str) -> str:
-    return hashlib.sha256(secret.encode()).hexdigest()
 
 
 # ------------------------------------------------------------------- members
@@ -245,7 +241,7 @@ def revoke_session(ctx: RequestContext, session_id: str) -> None:
 
 
 def _out(k: ApiKeyRecord) -> ApiKeyOut:
-    return ApiKeyOut(**k.model_dump(exclude={"secret_hash"}))
+    return ApiKeyOut(**k.model_dump(exclude={"secret_hash", "pepper_version"}))
 
 
 def list_keys(ctx: RequestContext) -> list[ApiKeyOut]:
@@ -257,6 +253,9 @@ def create_key(ctx: RequestContext, body: ApiKeyCreateIn) -> ApiKeyCreated:
     name = body.name.strip()
     if any(k.name.lower() == name.lower() and not k.revoked_at for k in repo.api_keys.list()):
         raise Conflict("An active key already has this name")
+    keyring = ctx.api_key_keyring
+    if keyring is None:
+        raise ServiceUnavailable("API keys are not configured")
     secret = f"dp_live_{secrets.token_hex(20)}"
     key = ApiKeyRecord(
         id=f"key_{uuid4().hex[:12]}",
@@ -265,7 +264,9 @@ def create_key(ctx: RequestContext, body: ApiKeyCreateIn) -> ApiKeyCreated:
         scopes=sorted(set(body.scopes)),
         created_by=ctx.principal.name,
         created_at=clock.now(),
-        secret_hash=hash_secret(secret),
+        expires_at=body.expires_at,
+        secret_hash=api_key_digest(secret, keyring.active_secret).hex(),
+        pepper_version=keyring.active,
     )
     repo.api_keys.put(key)
     audit.record(
@@ -293,14 +294,6 @@ def revoke_key(ctx: RequestContext, key_id: str) -> ApiKeyOut:
         metadata={"name": k.name, "prefix": k.prefix},
     )
     return _out(k)
-
-
-def find_key_by_secret(repo_keys: list[ApiKeyRecord], secret: str) -> ApiKeyRecord | None:
-    digest = hash_secret(secret)
-    for k in repo_keys:
-        if secrets.compare_digest(k.secret_hash, digest) and not k.revoked_at:
-            return k
-    return None
 
 
 # -------------------------------------------------------------- organization

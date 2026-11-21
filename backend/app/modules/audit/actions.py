@@ -68,9 +68,17 @@ _ACTIONS = (
     _a("settings.deletion_scheduled", "Deletion Scheduled", *_PG, scheduled_for="str"),
     _a("settings.deletion_cancelled", "Deletion Cancelled", *_PG),
     _a("login.session_revoked", "Session Revoked", *_PG, session_id="str", device="str"),
-    # ---- API keys: still in memory until Stage 3A.2
-    _a("api-key.created", "API Key Created", *_MEMORY, name="str", prefix="str", scopes="list[str]"),
-    _a("api-key.revoked", "API Key Revoked", *_MEMORY, name="str", prefix="str"),
+    # ---- Invitations and sessions (Stage 3B.1)
+    _a("user.invitation_issued", "Invitation Issued", *_PG, email="str", role="str"),
+    _a("user.invitation_accepted", "Invitation Accepted", *_PG, email="str"),
+    _a("login.logout", "Logout", *_PG, session_id="str"),
+    _a("login.refresh_reuse_detected", "Session Token Reuse Detected", *_PG, session_id="str"),
+    # ---- API keys (PostgreSQL since Stage 3B.1). Creation stays disabled in production until Stage 3B.2 verifies the
+    # step-up MFA code against an enrolled factor (today the code is only format-checked).
+    _a(
+        "api-key.created", "API Key Created", "postgres", "durable", False, name="str", prefix="str", scopes="list[str]"
+    ),
+    _a("api-key.revoked", "API Key Revoked", *_PG, name="str", prefix="str"),
     # ---- In-memory modules (Automate, Billing, Connect, Notifications)
     _a(
         "workflow.approved",
@@ -85,8 +93,8 @@ _ACTIONS = (
     _a("billing.plan_change_requested", "Plan Change Requested", *_MEMORY, to_plan="str"),
     _a("connection.credential_rotated", "Credential Rotated", *_MEMORY, connection_id="str"),
     _a("settings.notifications_changed", "Notifications Changed", *_MEMORY, category="str", enabled="bool"),
-    # ---- Sign-in. Present only in demo history until Stage 3B implements sign-in.
-    _a("login.succeeded", "Login", "postgres", "durable", False, method="str"),
+    # ---- Sign-in
+    _a("login.succeeded", "Login", *_PG, method="str"),
     _a("login.blocked", "Login Blocked", "postgres", "durable", False, reason="str"),
     # ---- Security events written by SecurityAuditWriter (independent transaction). Wired in Stage 3B.
     _a("api-key.rejected", "API Key Rejected", "postgres", "durable", False, reason="str"),

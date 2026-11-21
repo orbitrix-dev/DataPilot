@@ -21,6 +21,9 @@ CORE_TABLES = {
     "user_sessions",
     "tenant_settings",
     "audit_events",
+    "api_keys",
+    "refresh_tokens",
+    "invitation_tokens",
 }
 
 
@@ -35,7 +38,7 @@ def revision(db) -> str | None:
 
 def test_upgrade_from_an_empty_database_builds_the_core_schema(migrated, owner_database):
     # `migrated` ran `downgrade base` then `upgrade head` at the start of the session.
-    assert revision(owner_database) == "0004"
+    assert revision(owner_database) == "0005"
     assert tables(owner_database) == CORE_TABLES
 
 
@@ -53,7 +56,7 @@ def test_downgrade_removes_everything_and_re_upgrade_restores_it(migrated, owner
         assert tables(owner_database) == set()
     finally:
         command.upgrade(cfg, "head")
-    assert revision(owner_database) == "0004"
+    assert revision(owner_database) == "0005"
     assert tables(owner_database) == CORE_TABLES
     with owner_database.engine.connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM permissions")).scalar_one() == len(CATALOG)
@@ -132,7 +135,7 @@ def test_0002_backfills_existing_0001_data_and_its_downgrade_preserves_it(migrat
             s.execute(text("DELETE FROM users"))
             s.execute(text("DELETE FROM tenants"))
         command.upgrade(cfg, "head")
-    assert revision(owner_database) == "0004"
+    assert revision(owner_database) == "0005"
 
 
 ID_TABLES = ("tenants", "users", "roles", "tenant_memberships", "user_sessions", "audit_events")
@@ -170,5 +173,5 @@ def test_downgrading_0003_restores_the_original_defaults_and_revokes_grants(migr
             assert conn.execute(text("SELECT to_regclass('audit_events')")).scalar_one() is None
     finally:
         command.upgrade(cfg, "head")
-    assert revision(owner_database) == "0004"
+    assert revision(owner_database) == "0005"
     assert {t: d for t, d in _id_defaults(owner_database).items() if d is not None} == {}

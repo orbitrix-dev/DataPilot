@@ -1,4 +1,5 @@
 import os
+import secrets
 from collections.abc import Iterator
 from urllib.parse import urlsplit
 
@@ -56,6 +57,14 @@ else:
     # Empty, not removed: removing them would let Settings() fall back to the development URLs in .env.
     os.environ["DP_DATABASE_URL"] = ""
     os.environ["DP_MIGRATION_DATABASE_URL"] = ""
+
+
+# Fresh random authentication keys for every test run (never the development keys from .env, never committed).
+TEST_JWT_KID = "test-k1"
+os.environ["DP_JWT_SIGNING_KEYS"] = f"{TEST_JWT_KID}={secrets.token_urlsafe(48)}"
+os.environ["DP_JWT_ACTIVE_KID"] = TEST_JWT_KID
+os.environ["DP_API_KEY_PEPPERS"] = f"p1={secrets.token_urlsafe(48)}"
+os.environ["DP_API_KEY_PEPPER_VERSION"] = "p1"
 
 
 def alembic_config() -> Config:

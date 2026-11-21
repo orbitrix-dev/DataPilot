@@ -69,7 +69,13 @@ Read from `DP_*` environment variables, then the repo-root `.env` (shared with D
 | `DP_DB_CONNECT_TIMEOUT_SECONDS` | `5` | |
 | `DP_DB_STATEMENT_TIMEOUT_MS` | `15000` | Server-side cap per statement; `0` disables |
 | `DP_DB_MIGRATION_LOCK_TIMEOUT_MS` | `10000` | Migrations give up rather than queue behind long transactions |
-| `DP_CORS_ORIGINS`, `DP_API_PREFIX` | | |
+| `DP_CORS_ORIGINS`, `DP_API_PREFIX` | | `DP_CORS_ORIGINS` is also the allow-list for the `Origin` check on sign-in, refresh and cookie sign-out |
+| `DP_JWT_SIGNING_KEYS` / `DP_JWT_ACTIVE_KID` | none | `kid=secret,…` (≥ 32-char secrets) and the kid that signs new access tokens. **Required in prod.** Sign-in answers 503 without them |
+| `DP_JWT_ISSUER` / `DP_JWT_AUDIENCE` | `datapilot` / `datapilot-api` | Checked on every access token |
+| `DP_ACCESS_TOKEN_TTL_SECONDS` | `900` | 60–900 |
+| `DP_REFRESH_SESSION_TTL_DAYS` | `30` | Absolute session lifetime, 1–90. The tenant's idle timeout applies too |
+| `DP_INVITATION_TTL_HOURS` | `24` | 1–72 |
+| `DP_API_KEY_PEPPERS` / `DP_API_KEY_PEPPER_VERSION` | none | `version=secret,…` and the active version. **Required in prod.** Rotation: [docs/SECURITY.md](../docs/SECURITY.md#key-management) |
 
 ### Database and transactions
 
@@ -162,9 +168,27 @@ curl -H 'X-DataPilot-User: u-marcus' localhost:8000/api/v1/me     # Organization
 curl -H 'X-DataPilot-User: u-lena'   localhost:8000/api/v1/me     # Analyst
 ```
 
-These headers are refused when `DP_ENV=prod`. There is no user sign-in yet (SSO/JWT is the next step), so outside dev only API keys work.
+These headers are only honoured in dev/test and only when no `Authorization` header is sent. In production a request needs an access token or an API key.
 
-**API keys** are created at `POST /api/v1/api-keys` (the secret is returned once) and sent as `Authorization: Bearer dp_live_…`. Keys are read-only and limited to their scopes (`trust:read`, `connect:read`, …). `intelligence:query` may also POST questions.
+**Signing in (Stage 3B.1).** There's no self-service registration. An operator issues an invitation; the token is printed once and only its digest is stored:
+
+```bash
+uv run python -m app.cli invite-user --tenant acme --email jordan.lee@acme.io --role manager [--name "Jordan Lee"] [--title "Ops Lead"]
+```
+
+The person then sets a password and signs in (the browser does this; with curl, `Origin` must be in `DP_CORS_ORIGINS` and the refresh cookie needs https):
+
+```bash
+curl -X POST localhost:8000/api/v1/auth/invitations/accept -H 'Content-Type: application/json' \
+     -d '{"token": "dpi_…", "password": "a long passphrase"}'                     # 204
+curl -X POST localhost:8000/api/v1/auth/login -H 'Origin: http://localhost:5173' -H 'Content-Type: application/json' \
+     -d '{"email": "jordan.lee@acme.io", "password": "a long passphrase"}'        # {"access_token": …, "expires_in": 900, …}
+curl -H 'Authorization: Bearer <access_token>' localhost:8000/api/v1/me
+```
+
+`POST /auth/refresh` (refresh cookie + `X-CSRF-Token` + `Origin`) rotates the session; `POST /auth/logout` ends it. Tokens, cookies, CSRF, rotation, reuse detection and key rotation are described in [docs/SECURITY.md](../docs/SECURITY.md).
+
+**API keys** (for non-browser clients) are created at `POST /api/v1/api-keys` (the secret is returned once; stored as a peppered HMAC in PostgreSQL) and sent as `Authorization: Bearer dp_live_…`. Keys are read-only and limited to their scopes (`trust:read`, `connect:read`, …). `intelligence:query` may also POST questions.
 
 Errors always look like `{"error": {"code": "forbidden", "message": "…", "details": {…}}}`.
 
@@ -191,7 +215,10 @@ app/
     persistence.py   PostgreSQL repositories (tenants, identity)
   modules/tenants/pg_tables.py     the Tenants service's Table interface on PostgreSQL (members, sessions, workspace)
   modules/tenants/permissions.py   permission catalog + deterministic level ↔ permission-set mapping
-  seed_postgres.py   demo tenant for PostgreSQL;  cli.py: `python -m app.cli seed-demo`
+  modules/auth/      invitations, sign-in, refresh rotation, sign-out, access-token validation (service.py, router.py)
+  core/security.py   Argon2id, opaque tokens, API-key HMAC, JWT issue/verify, keyrings
+  core/readiness.py  production blockers checked at startup
+  seed_postgres.py   demo tenant for PostgreSQL;  cli.py: seed-demo, check-db-privileges, invite-user
 migrations/
   env.py             Alembic environment (URL from DP_* settings, one transaction, lock_timeout)
   versions/          migration scripts (0001_core_schema.py, 0002_tenants_persistence.py)
@@ -226,6 +253,6 @@ Approver job titles on workflows ("Finance Manager", "Operations Lead") are not 
 ## Next steps
 
 1. PostgreSQL repositories (SQLAlchemy + Alembic) behind the existing `Protocol`s, with tenant isolation.
-2. Real sign-in (SSO/JWT) to replace the dev headers, plus session tracking and login audit events.
+2. Stage 3B.2: TOTP MFA, recovery codes, `require_mfa` enforcement, step-up for API-key creation, `SecurityAuditWriter` for rejected attempts. Stage 3B.3: sign-in throttling and rate limits.
 3. Port Insights and Intelligence, then switch the front end's mock stores to this API module by module.
 4. Workers: ingestion (sync jobs), action execution and notification delivery, consuming the job queue.

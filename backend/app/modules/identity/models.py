@@ -10,6 +10,7 @@ from datetime import datetime
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
+    ForeignKey,
     ForeignKeyConstraint,
     Index,
     LargeBinary,
@@ -94,4 +95,70 @@ class UserSession(UUIDPrimaryKey, Base):
         CheckConstraint("(revoked_at IS NULL) = (revoked_reason IS NULL)", name="revocation_has_reason"),
         Index("ix_user_sessions_tenant_id_active", "tenant_id", postgresql_where=text("revoked_at IS NULL")),
         Index(None, "user_id"),
+    )
+
+
+class RefreshToken(UUIDPrimaryKey, Base):
+    """One link in a session's refresh-token family (the family is the session). Rotation marks the presented token
+    used and issues its child. Presenting a used or revoked token is replay: the whole family (session) is revoked."""
+
+    __tablename__ = "refresh_tokens"
+
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("user_sessions.id", ondelete="CASCADE")
+    )
+    token_hash: Mapped[bytes] = mapped_column(LargeBinary, unique=True)
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("refresh_tokens.id", ondelete="SET NULL")
+    )
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("octet_length(token_hash) = 32", name="token_hash_is_digest"),
+        CheckConstraint("expires_at > issued_at", name="expires_after_issue"),
+        # At most one live token per family: two concurrent rotations can't both succeed.
+        Index(
+            "uq_refresh_tokens_session_id_live",
+            "session_id",
+            unique=True,
+            postgresql_where=text("used_at IS NULL AND revoked_at IS NULL"),
+        ),
+        Index(None, "session_id"),
+    )
+
+
+class InvitationToken(UUIDPrimaryKey, Base):
+    """A single-use, expiring invitation to set a password for a membership. Only the digest is stored; the token is
+    shown once to the operator who issued it. Acceptance consumes it atomically."""
+
+    __tablename__ = "invitation_tokens"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    token_hash: Mapped[bytes] = mapped_column(LargeBinary, unique=True)
+    issued_by: Mapped[str] = mapped_column(String(160))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"],
+            ["tenant_memberships.tenant_id", "tenant_memberships.user_id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("octet_length(token_hash) = 32", name="token_hash_is_digest"),
+        CheckConstraint("expires_at > created_at", name="expires_after_creation"),
+        # One outstanding invitation per membership: issuing a new one revokes the previous.
+        Index(
+            "uq_invitation_tokens_tenant_id_user_id_live",
+            "tenant_id",
+            "user_id",
+            unique=True,
+            postgresql_where=text("used_at IS NULL AND revoked_at IS NULL"),
+        ),
     )

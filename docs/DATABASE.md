@@ -1,14 +1,14 @@
-# Database schema (Stages 2A–3A.1, with security hardening)
+# Database schema (Stages 2A–3B.1)
 
 PostgreSQL 16+ (developed on 18), managed only by Alembic (`backend/migrations/`). ORM models live in `backend/app/modules/*/models.py` and must match the migrations; `uv run alembic check` and `tests/test_core_migration.py` enforce it.
 
-**Status (Stage 3A.1):**
-- **On PostgreSQL:** the Tenants module (tenants, members, sessions, workspace settings, permission matrix) and the **audit log**. Request authentication resolves against it.
+**Status (Stage 3B.1):**
+- **On PostgreSQL:** the Tenants module (tenants, members, sessions, workspace settings, permission matrix, **API keys**), the **audit log**, and **authentication** (passwords, refresh-token families, invitations; see [SECURITY.md](SECURITY.md)). Request authentication resolves against it.
 - **Unchanged:** API contracts, readable IDs (`acme`, `u-elena`, `sess-1`) and error messages. The one exception is audit event `id`s, which are now UUIDv7 strings.
-- **Still in memory:** API keys, Connect, Trust, Automate, Billing and Notifications.
+- **Still in memory:** Connect, Trust, Automate, Billing and Notifications.
 - **The application connects as a least-privilege runtime user**, `datapilot_app`. See [Database roles](#database-roles-stage-3a1).
 
-> **Production is blocked.** The API refuses to start with `DP_ENV=prod` until audit retention is enforced. See [Production blockers](#production-blockers).
+> **Production is blocked.** The API refuses to start with `DP_ENV=prod` until audit retention, MFA and sign-in abuse protection exist and no tenant has `enforce_sso` set. See [Production blockers](#production-blockers).
 
 ## Entity relationships
 
@@ -117,7 +117,10 @@ erDiagram
 | `role_permissions` | tenant | `PRIMARY KEY (role_id, permission_code)`; FK `(tenant_id, role_id) → roles`; FK `permission_code → permissions` |
 | `tenant_memberships` | tenant | `UNIQUE (tenant_id, user_id)`; FK `(tenant_id, role_id) → roles (tenant_id, id)`; `(membership_status = 'invited') = (joined_at IS NULL)` |
 | `tenant_settings` | tenant (1:1) | `PRIMARY KEY (tenant_id)`, FK → tenants (`RESTRICT`); retention `IN (90, 365)`; timeout `IN (1, 8, 12, 24)`; non-blank industry/timezone (their allowed values are validated by the API) |
-| `user_sessions` | tenant | `UNIQUE (token_hash)`, exactly 32 bytes; FK `(tenant_id, user_id) → tenant_memberships`; `expires_at > created_at`; revocation needs a reason |
+| `user_sessions` | tenant | `UNIQUE (token_hash)`, exactly 32 bytes; FK `(tenant_id, user_id) → tenant_memberships`; `expires_at > created_at`; revocation needs a reason. Since 3B.1 a session is a refresh-token family |
+| `api_keys` (0005) | tenant | `UNIQUE (public_id)`; `UNIQUE (secret_hash)`, exactly 32 bytes (HMAC-SHA256); `pepper_version`; scopes non-empty and from the five API scopes; `UNIQUE (tenant_id, lower(name)) WHERE revoked_at IS NULL`; FK tenant `RESTRICT`; creator/revoker `SET NULL`; `expires_at > created_at` |
+| `refresh_tokens` (0005) | via session | `UNIQUE (token_hash)`, 32 bytes; FK session `CASCADE`; `parent_id` (the token it replaced) `SET NULL`; `UNIQUE (session_id) WHERE used_at IS NULL AND revoked_at IS NULL` (one live token per family); `expires_at > issued_at` |
+| `invitation_tokens` (0005) | tenant | `UNIQUE (token_hash)`, 32 bytes; FK `(tenant_id, user_id) → tenant_memberships` `CASCADE`; `UNIQUE (tenant_id, user_id) WHERE used_at IS NULL AND revoked_at IS NULL`; `expires_at > created_at` |
 
 Indexes beyond keys: `tenant_memberships (user_id)` (a user's tenants), `tenant_memberships (tenant_id, role_id)` (members per role; RESTRICT checks), `role_permissions (tenant_id)`, `role_permissions (permission_code)`, `user_sessions (tenant_id) WHERE revoked_at IS NULL` (active sessions), `user_sessions (user_id)`.
 
@@ -212,14 +215,15 @@ The Admin → Permissions page speaks *levels* per capability. `app/modules/tena
 
 ## Credentials
 
-- `users.password_hash` accepts only Argon2id strings (`CHECK`), and stays NULL until authentication exists. Repositories have no password setter yet.
-- `user_sessions.token_hash` accepts only 32-byte digests (`CHECK`). The repository refuses anything else.
+- `users.password_hash` accepts only Argon2id strings (`CHECK`). It's NULL until the user accepts an invitation; only `auth.service.accept_invitation` sets it (and sign-in re-hashes it when Argon2 parameters change).
+- `user_sessions.token_hash`, `refresh_tokens.token_hash` and `invitation_tokens.token_hash` accept only 32-byte SHA-256 digests; `api_keys.secret_hash` only a 32-byte HMAC-SHA256. No raw token or key is stored.
 - `ip` is `INET`: invalid values are rejected rather than stored as free text.
 - The demo seed creates no passwords and no sessions.
 
 ## Migrations
 
 - `0001_core_schema` creates everything above and inserts the permission catalog. The catalog rows are a frozen copy in the migration, because migrations must not import app code; a test checks they match `permissions.py`.
+- `0005_identity_foundation` (Stage 3B.1) creates `api_keys`, `refresh_tokens` and `invitation_tokens` and grants the runtime user `SELECT, INSERT, UPDATE` on them (no `DELETE`: keys are revoked, tokens are marked used/revoked). **Rollback:** its downgrade drops the three tables, which deletes every API key (integrations stop authenticating), every refresh token (everyone is signed out at their next refresh) and every outstanding invitation. Sessions and passwords are in pre-existing tables and survive. Downgrade 0005 only together with the 3B.1 code.
 - Downgrade drops every table, which deletes all data. Use it in development and CI only.
 - Commands, transaction behaviour and the deployment rule are in [backend/README.md](../backend/README.md#migrations-alembic).
 
@@ -413,3 +417,6 @@ The matrix above is the runtime user's complete **effective** access. Migration 
 `backend/app/core/readiness.py` runs at startup with `DP_ENV=prod` and refuses to start while any of these hold. Each is derived from the code itself; there's **no configuration switch** to bypass them:
 1. **Audit retention is not enforced** (`audit.retention.is_enforced()` is false).
 2. **An action is production-enabled while memory-backed or transitional.**
+3. **Sign-in abuse protection is not implemented** (`auth.enforcement.abuse_protection_enforced()`; Stage 3B.3).
+4. **An active tenant requires MFA** while MFA is not implemented (`auth.enforcement.mfa_enforced()`; Stage 3B.2). Read from `tenant_settings` at startup.
+5. **An active tenant has `enforce_sso` set.** SSO is not implemented; the setting is stored but password sign-in still works, so it must not reach production silently.

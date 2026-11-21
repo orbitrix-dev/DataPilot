@@ -26,6 +26,7 @@ from app.modules.audit.models import AuditEventRecord
 from app.modules.audit.repository import AuditEntry, InMemoryAuditRepository, PostgresAuditRepository
 from app.modules.audit.sanitize import REDACTED, redact
 from app.modules.audit.security_writer import SecurityAuditWriter
+from app.modules.auth import enforcement
 from app.modules.identity.persistence import PostgresUserRepository
 from app.modules.tenants.persistence import (
     PostgresMembershipRepository,
@@ -82,8 +83,39 @@ def test_all_18_audit_call_sites_use_registered_action_codes():
     assert unregistered == []
 
 
+def _record_event_actions() -> list[tuple[str, str]]:
+    """Actions recorded with audit.service.record_event (flows without a request context: invitations, sign-in)."""
+    found = []
+    for path in sorted((BACKEND_DIR / "app" / "modules").rglob("service.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "record_event":
+                arg = node.args[1]
+                assert isinstance(arg, ast.Constant), f"{path}: record_event action must be a literal code"
+                found.append((str(path.relative_to(BACKEND_DIR)), arg.value))
+    return found
+
+
+def test_record_event_call_sites_use_registered_action_codes():
+    sites = _record_event_actions()
+    assert sorted(a for _, a in sites) == sorted(
+        [
+            "user.invitation_issued",
+            "user.invitation_accepted",
+            "login.succeeded",
+            "login.refresh_reuse_detected",
+            "login.logout",
+        ]
+    )
+    assert all(a in ACTIONS for _, a in sites)
+
+
 def test_every_registered_action_is_used_by_a_call_site_the_demo_history_or_the_security_writer():
-    used = {a for _, a in _call_site_actions()} | set(DEMO_AUDIT_ACTIONS.values()) | {"api-key.rejected"}
+    used = (
+        {a for _, a in _call_site_actions()}
+        | {a for _, a in _record_event_actions()}
+        | set(DEMO_AUDIT_ACTIONS.values())
+        | {"api-key.rejected"}
+    )
     assert used == set(ACTIONS)
 
 
@@ -98,8 +130,6 @@ def test_every_action_declares_store_durability_production_and_an_allowlist():
 
 def test_memory_backed_actions_are_exactly_the_in_memory_modules_and_never_production_enabled():
     assert {
-        "api-key.created",
-        "api-key.revoked",
         "workflow.approved",
         "workflow.rejected",
         "billing.plan_changed",
@@ -186,22 +216,6 @@ def test_every_real_call_site_produces_secret_free_events(client):
 
 MemoryCase = tuple[str, str, str, dict, dict, Callable[[object], bool]]
 MEMORY_CASES: list[MemoryCase] = [
-    (
-        "api-key.created",
-        "POST",
-        "/api-keys",
-        {"name": "Reader", "scopes": ["trust:read"], "mfa_code": "123456"},
-        {},
-        lambda reg: any(k.name == "Reader" for k in reg.get("acme").tenants.api_keys.list()),
-    ),
-    (
-        "api-key.revoked",
-        "POST",
-        "/api-keys/key-9f2a/revoke",
-        {},
-        {},
-        lambda reg: reg.get("acme").tenants.api_keys.get("key-9f2a").revoked_at is not None,
-    ),
     (
         "workflow.approved",
         "POST",
@@ -309,6 +323,7 @@ def test_production_is_blocked_while_retention_is_not_enforced():
 
 def test_production_is_blocked_if_a_memory_backed_action_is_production_enabled(monkeypatch):
     monkeypatch.setattr(retention, "is_enforced", lambda: True)
+    monkeypatch.setattr(enforcement, "abuse_protection_enforced", lambda: True)
     good = [a for a in ACTIONS.values() if a.business_store == "postgres"]
     assert production_blockers(good) == []
     sneaky = AuditAction("billing.plan_changed", "Plan Changed", "memory", "transitional", True)
@@ -319,6 +334,7 @@ def test_production_is_blocked_if_a_memory_backed_action_is_production_enabled(m
 
 def test_the_real_registry_currently_passes_the_action_check(monkeypatch):
     monkeypatch.setattr(retention, "is_enforced", lambda: True)
+    monkeypatch.setattr(enforcement, "abuse_protection_enforced", lambda: True)
     assert production_blockers() == []
 
 
