@@ -190,7 +190,7 @@ def test_runtime_user_cannot_delete_tenants_users_or_roles_or_change_the_schema_
         db_session.execute(text("DELETE FROM users WHERE id = :u"), {"u": u.id})
     with denied(db_session, "permission denied for table roles"):
         db_session.execute(delete(Role).where(Role.tenant_id == t.id))
-    assert db_session.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0003"
+    assert db_session.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0004"
     with denied(db_session, "permission denied for table alembic_version"):
         db_session.execute(text("UPDATE alembic_version SET version_num = 'x'"))
 

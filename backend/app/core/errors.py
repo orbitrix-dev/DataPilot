@@ -1,8 +1,9 @@
 import logging
+import traceback
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from sqlalchemy.exc import OperationalError
+from fastapi.responses import JSONResponse, PlainTextResponse
+from sqlalchemy.exc import DBAPIError, OperationalError
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +63,33 @@ def install_error_handlers(app: FastAPI) -> None:
         return _error_response(exc)
 
     @app.exception_handler(OperationalError)
-    async def _database_error(_: Request, exc: OperationalError) -> JSONResponse:
-        # Connection failures, timeouts, cancelled statements. Details (hosts, SQL) are logged, never returned.
-        log.error("Database operation failed", exc_info=exc)
+    async def _database_unavailable(_: Request, exc: OperationalError) -> JSONResponse:
+        # Connection failures, timeouts, cancelled statements.
+        log.error("Database operation failed: %s", describe_database_error(exc))
         return _error_response(ServiceUnavailable("The database is temporarily unavailable"))
+
+    @app.exception_handler(DBAPIError)
+    async def _database_error(_: Request, exc: DBAPIError) -> PlainTextResponse:
+        # Any other database error (e.g. a CHECK rejecting a row). Same response as an unhandled error always gave.
+        log.error("Database error: %s", describe_database_error(exc))
+        return PlainTextResponse("Internal Server Error", status_code=500)
+
+
+def describe_database_error(exc: DBAPIError) -> str:
+    """A loggable description of a database error WITHOUT its message.
+
+    PostgreSQL error messages can contain row values ("DETAIL: Failing row contains (...)", "Key (email)=(...)"), so a
+    rejected credential would otherwise be copied into logs. Logged: error class, SQLSTATE, constraint, and where in our
+    code it happened.
+    """
+    orig = getattr(exc, "orig", None)
+    diag = getattr(orig, "diag", None)
+    frames = [f for f in traceback.extract_tb(exc.__traceback__) if "/app/" in f.filename][-3:]
+    location = " <- ".join(f"{f.filename.rsplit('/app/', 1)[-1]}:{f.lineno}" for f in reversed(frames)) or "unknown"
+    return (
+        f"{type(orig).__name__ if orig is not None else type(exc).__name__}"
+        f" sqlstate={getattr(orig, 'sqlstate', None)}"
+        f" constraint={getattr(diag, 'constraint_name', None)}"
+        f" table={getattr(diag, 'table_name', None)}"
+        f" at {location}"
+    )

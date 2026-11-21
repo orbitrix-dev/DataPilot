@@ -43,6 +43,9 @@ class Database:
             # Detects connections dropped by the server or a proxy before handing them out.
             pool_pre_ping=True,
             echo=echo,
+            # Bound values never appear in exception messages or SQL logs: a rejected row (e.g. a CHECK catching a
+            # leaked credential) must not copy that value into error logs.
+            hide_parameters=True,
             connect_args={
                 "application_name": "datapilot-api",
                 "connect_timeout": connect_timeout,

@@ -35,6 +35,7 @@ class SecurityAuditWriter:
             max_overflow=0,
             pool_timeout=timeout_seconds,
             pool_pre_ping=True,
+            hide_parameters=True,  # never echo bound values (event contents) into exception messages or logs
             connect_args={
                 "application_name": "datapilot-security-audit",
                 "connect_timeout": max(1, int(timeout_seconds)),
@@ -65,11 +66,11 @@ class SecurityAuditWriter:
             action=definition.code,
             actor_type=actor_type,
             actor_id=actor_id,
-            actor_label=actor_label,
+            actor_label=redact(actor_label),
             summary=redact(summary),
             resource_type=resource_type,
             resource_id=redact(resource_id) if resource_id is not None else None,
-            client=client,
+            client=redact(client),
             metadata=clean_metadata(definition, metadata),
         )
         try:

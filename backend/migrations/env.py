@@ -62,6 +62,7 @@ def run_migrations_online() -> None:
     engine = create_engine(
         url,
         poolclass=pool.NullPool,
+        hide_parameters=True,
         connect_args={
             "application_name": "datapilot-migrations",
             # Set at connect time. Executing `SET` on the connection here would autobegin a transaction that

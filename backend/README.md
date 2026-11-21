@@ -34,6 +34,14 @@ uv run uvicorn app.main:app --reload --port 8000
 
 Day to day: `docker compose up -d --wait postgres`, then the `uvicorn` line. `docker compose down` stops PostgreSQL and keeps the data; `docker compose down -v` **deletes all local database data**.
 
+### Verifying database privileges
+
+```bash
+uv run python -m app.cli check-db-privileges   # exit 0: the runtime user has exactly the approved privileges
+```
+
+It reports every deviation: role attributes, memberships, ownership, temporary tables, schema `CREATE`, table and column privileges, function `EXECUTE`, and anything granted to `PUBLIC`. Run it after provisioning a database or changing roles.
+
 ### Tests, lint and format
 
 From `backend/`, with the postgres container running:

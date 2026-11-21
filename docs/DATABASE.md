@@ -1,4 +1,4 @@
-# Database schema (Stages 2A–3A.1)
+# Database schema (Stages 2A–3A.1, with security hardening)
 
 PostgreSQL 16+ (developed on 18), managed only by Alembic (`backend/migrations/`). ORM models live in `backend/app/modules/*/models.py` and must match the migrations; `uv run alembic check` and `tests/test_core_migration.py` enforce it.
 
@@ -303,7 +303,33 @@ erDiagram
 
 They work in development and testing. In production, recording them is refused, and startup fails if any of them is marked production-enabled. An action becomes `postgres`/`durable`/production-enabled only when its module moves to PostgreSQL and its atomicity tests pass.
 
-**Metadata:** each action's allowlist names the exact keys and types (short strings, integers, booleans, short string lists). Anything else is **rejected**, not silently dropped. Secret-looking substrings in summaries, resource ids and metadata strings are then redacted: `dp_live_…` with hex, `Bearer …`, `$argon2…`, and runs of 32+ hex characters. Database CHECKs are the last line of defence. Request bodies, headers, cookies, tokens and MFA codes are never recorded.
+**Keeping credentials out of audit records** (`backend/app/modules/audit/sanitize.py`). There are three layers:
+
+1. **Metadata allowlists (primary):** each action names its exact keys and types. Anything else is rejected, not silently dropped. Validation errors name the key and type, never the value.
+2. **Redaction (secondary):** applied to every free-text field (summary, resource id, actor label, client label, metadata strings). It keeps the surrounding context.
+
+   | Format | Example result |
+   |---|---|
+   | PEM private keys (including truncated blocks) | `[REDACTED]` |
+   | URLs with a password | `postgresql://app:[REDACTED]@db.internal/prod` (user and host kept) |
+   | `password=` / `secret:` / `token=` / `api_key=` / `aws_secret_access_key=`-style pairs | `password=[REDACTED]` (key name kept) |
+   | `Bearer …` | `[REDACTED]` |
+   | JWTs (`eyJ…`) | `[REDACTED]` |
+   | AWS access key ids (`AKIA…`, `ASIA…`, …) | `[REDACTED]` |
+   | GitHub / GitLab / Slack / Google / Stripe tokens | `[REDACTED]` |
+   | DataPilot API-key secrets, Argon2 hashes, standalone 32+ hex strings | `[REDACTED]` |
+
+   **Deliberately kept:** names, emails, masked key prefixes (`dp_live_••••9f2a`), UUIDs, and readable ids such as `u-<32 hex>` / `sess-<32 hex>`. The long-hex rule ignores hex that is part of an identifier.
+3. **Database CHECKs (last line, migration `0004`):** reject API-key secrets, PEM private keys, AWS access key ids, JWTs and unredacted URL passwords in `summary`, `resource_id`, `actor_label`, `client_label` and `metadata`.
+
+**Limits:**
+- Regex redaction can't recognise an arbitrary secret with no recognisable shape, such as a password typed into a name field. The allowlists, and keeping raw user input out of audit text, are the real protection.
+- A standalone 40-character AWS *secret* key is only caught in `key=value` form.
+
+**Logs:**
+- Database engines use `hide_parameters=True`, so bound values never appear in SQLAlchemy errors.
+- Database errors are logged as error class, SQLSTATE, constraint, table and code location. PostgreSQL's own message isn't logged, because it can contain the rejected row (`DETAIL: Failing row contains …`).
+- Unexpected database errors still return the plain `500 Internal Server Error` they always did.
 
 ### Security events that must survive a failed request
 
@@ -346,7 +372,34 @@ The two must be **different users in every environment.** Migration `0003` refus
 | `alembic_version` | ✓ | | | | schema-revision reporting |
 
 - **Owner rights for referential actions:** cascades (a membership delete removing its sessions) and foreign-key checks (`role_permissions` → `permissions`) run with the table owner's rights. The runtime user needs neither `DELETE` on `user_sessions` nor `REFERENCES` on `permissions`. Both are tested.
-- **No default privileges:** a new table gets nothing until its migration grants it. A test compares the live grants with this matrix.
+- **No default privileges:** a new table gets nothing until its migration grants it.
+
+### Effective privileges and `PUBLIC` (migration 0004)
+
+The matrix above is the runtime user's complete **effective** access. Migration `0004` makes that true on fresh and existing databases alike, and `python -m app.cli check-db-privileges` verifies it (exit code 1 on any deviation). The command is also covered by tests.
+
+| Check | Expected |
+|---|---|
+| Role attributes | no SUPERUSER, CREATEROLE, CREATEDB, REPLICATION or BYPASSRLS |
+| Role memberships, direct or inherited (`pg_auth_members`, `pg_has_role`), including predefined `pg_*` roles | **none.** `0004` refuses to run otherwise |
+| Ownership (tables, functions, schemas, databases) | none |
+| Database | `CONNECT` granted explicitly; **no `CREATE` and no `TEMPORARY`** (no temporary tables) |
+| Schemas | `USAGE` on `public` only; `CREATE` nowhere |
+| Tables | exactly the matrix, checked with `has_table_privilege` for all seven privilege types plus column-level grants; any other table grants nothing |
+| Functions | no `EXECUTE` (triggers fire without it) |
+| `PUBLIC` | **no privileges** on the database, schema `public`, any table or any function. NULL ACLs are counted as PostgreSQL's built-in defaults |
+
+**What `0004` changed relative to 0003:**
+- PostgreSQL's defaults had given `PUBLIC` `CONNECT` and `TEMPORARY` on the database, `USAGE` on `public`, and `EXECUTE` on new functions. As a result, the runtime user could create temporary tables.
+- `0003` only ever added grants, so a privilege granted by hand earlier survived it.
+- `0004` revokes everything, then re-grants exactly the matrix.
+
+**Operational assumptions:**
+- **Database ownership:** the migration user owns the database (or is a superuser), which revoking `PUBLIC` database privileges requires.
+- **Other roles:** any other role that used to connect through `PUBLIC` now needs an explicit `GRANT CONNECT`.
+- **Role administration:** a runtime user with memberships or elevated attributes must be fixed by whoever administers roles; `0004` stops and says so rather than silently changing roles.
+
+**Recommended for production PostgreSQL:** `log_error_verbosity = terse`, so the server log omits the `DETAIL` lines that can contain row values.
 
 ## UUIDv7 everywhere (Stage 3A.1)
 
