@@ -1,7 +1,8 @@
 """Loads the demo tenant into PostgreSQL, matching the in-memory demo in ``app/seed.py`` exactly.
 
 Acme Global Corp: tenant settings, 12 users (with their readable ids, e.g. "u-elena"), the five system roles with the
-current permission matrix, memberships (title, last activity), the four demo sessions and the 12 demo audit events.
+current permission matrix, memberships (title, last activity), the four demo sessions, the two demo API keys and the
+12 demo audit events.
 
 Behaviour:
 - **Idempotent; never overwrites edits.** Rows are inserted with ``ON CONFLICT DO NOTHING`` on their natural keys
@@ -40,11 +41,11 @@ from app.modules.audit.models import AuditEventRecord
 from app.modules.audit.repository import split_client
 from app.modules.identity.models import User, UserSession
 from app.modules.identity.persistence import normalize_email, parse_ip
-from app.modules.tenants.models import Role, RolePermission, Tenant, TenantMembership, TenantSettings
+from app.modules.tenants.models import ApiKey, Role, RolePermission, Tenant, TenantMembership, TenantSettings
 from app.modules.tenants.permissions import grants_from_matrix
 from app.modules.tenants.persistence import DEFAULT_SETTINGS
 from app.modules.tenants.schemas import ROLES
-from app.seed import _audit, _members, _sessions, _workspace
+from app.seed import _audit, _keys, _members, _sessions, _workspace
 
 DEMO_TENANT_SLUG = "acme"
 # Demo sessions disappear from Admin → Sessions this long after seeding (they're listed only while unexpired).
@@ -64,6 +65,7 @@ class SeedReport:
             "memberships": 0,
             "sessions": 0,
             "audit_events": 0,
+            "api_keys": 0,
         }
     )
 
@@ -188,6 +190,26 @@ def seed_demo(session: Session) -> SeedReport:
         }
         if _insert_ignore(session, UserSession, values, ["public_id"]):
             report.created["sessions"] += 1
+
+    # ---- demo API keys: unusable, like the demo sessions (digest of a discarded random secret)
+    member_ids = {m.name: user_ids[m.id] for m in _members()}
+    for demo_key in _keys():
+        values = {
+            "id": uuid7(),
+            "public_id": demo_key.id,
+            "tenant_id": tenant_id,
+            "name": demo_key.name,
+            "prefix": demo_key.prefix,
+            "secret_hash": _unusable_token_digest(),
+            "pepper_version": "seed",
+            "scopes": list(demo_key.scopes),
+            "created_by_user_id": member_ids.get(demo_key.created_by),
+            "created_by_name": demo_key.created_by,
+            "created_at": demo_key.created_at,
+            "last_used_at": demo_key.last_used_at,
+        }
+        if _insert_ignore(session, ApiKey, values, ["public_id"]):
+            report.created["api_keys"] += 1
 
     # ---- demo audit history (deterministic UUIDv7 ids)
     for entry in _audit():

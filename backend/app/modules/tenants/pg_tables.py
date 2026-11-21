@@ -7,7 +7,7 @@ schema, so the service, routes and response contracts stay as they are:
 - ``members``   ⇄ users + tenant_memberships + roles. Member ``id`` is ``users.public_id`` ("u-elena").
 - ``sessions``  ⇄ user_sessions. Session ``id`` is ``user_sessions.public_id`` ("sess-1").
 - ``workspace`` ⇄ tenants (name, deletion schedule) + tenant_settings + the role_permissions matrix.
-- ``api_keys``  stays in memory (API key persistence is a later stage).
+- ``api_keys``  ⇄ api_keys. Key ``id`` is ``api_keys.public_id``; only an HMAC digest of the secret is stored.
 
 Every adapter is bound to one tenant's UUID, resolved from the request context, and one ``Session`` (the
 request's unit of work; adapters never commit). Rows of other tenants are invisible: looking one up raises the
@@ -27,11 +27,10 @@ from sqlalchemy.orm import Session as DbSession
 
 from app.core import clock
 from app.core.errors import NotFound
-from app.core.repository import Table
 from app.modules.identity.models import User, UserSession
 from app.modules.identity.persistence import parse_ip
 
-from .models import Role, Tenant, TenantMembership, TenantSettings
+from .models import ApiKey, Role, Tenant, TenantMembership, TenantSettings
 from .persistence import PostgresRoleRepository
 from .schemas import ApiKeyRecord, Member, OrgSettings, SecurityPolicy, Session, Workspace
 
@@ -285,23 +284,91 @@ class PostgresWorkspaceTable:
         raise NotImplementedError("A workspace is deleted through the tenant lifecycle, not this table")
 
 
+# ====================================================================== API keys
+
+
+class PostgresApiKeysTable:
+    """API keys of one tenant. Keys are never deleted: revocation (and last use) are updates."""
+
+    def __init__(self, session: DbSession, tenant_id: uuid.UUID) -> None:
+        self._s = session
+        self._tenant_id = tenant_id
+
+    @staticmethod
+    def _to_record(k: ApiKey) -> ApiKeyRecord:
+        return ApiKeyRecord(
+            id=k.public_id,
+            name=k.name,
+            prefix=k.prefix,
+            scopes=list(k.scopes),
+            created_by=k.created_by_name,
+            created_at=k.created_at,
+            last_used_at=k.last_used_at,
+            revoked_at=k.revoked_at,
+            expires_at=k.expires_at,
+            secret_hash=k.secret_hash.hex(),
+            pepper_version=k.pepper_version,
+        )
+
+    def _row(self, key: str) -> ApiKey | None:
+        return self._s.scalar(select(ApiKey).where(ApiKey.tenant_id == self._tenant_id, ApiKey.public_id == key))
+
+    def list(self) -> list[ApiKeyRecord]:
+        rows = self._s.scalars(select(ApiKey).where(ApiKey.tenant_id == self._tenant_id).order_by(ApiKey.id))
+        return [self._to_record(k) for k in rows]
+
+    def find(self, key: str) -> ApiKeyRecord | None:
+        row = self._row(key)
+        return self._to_record(row) if row else None
+
+    def get(self, key: str) -> ApiKeyRecord:
+        found = self.find(key)
+        if found is None:
+            raise _not_found("API key", key)
+        return found
+
+    def put(self, row: ApiKeyRecord) -> ApiKeyRecord:
+        existing = self._row(row.id)
+        if existing is None:
+            existing = ApiKey(
+                public_id=row.id,
+                tenant_id=self._tenant_id,
+                name=row.name,
+                prefix=row.prefix,
+                secret_hash=bytes.fromhex(row.secret_hash),
+                pepper_version=row.pepper_version,
+                scopes=list(row.scopes),
+                created_by_name=row.created_by,
+                created_at=row.created_at,
+                expires_at=row.expires_at,
+            )
+            self._s.add(existing)
+        existing.revoked_at = row.revoked_at
+        existing.last_used_at = row.last_used_at
+        self._s.flush()
+        return self._to_record(existing)
+
+    def delete(self, key: str) -> None:
+        raise NotImplementedError("API keys are revoked, never deleted")
+
+
 # ====================================================================== the repository
 
 
 @dataclass
 class PostgresTenantsRepository:
-    """Satisfies ``TenantsRepository``. API keys stay in the in-memory table they always used."""
+    """Satisfies ``TenantsRepository``: members, sessions, API keys and the workspace, all in PostgreSQL."""
 
     members: PostgresMembersTable
     sessions: PostgresSessionsTable
-    api_keys: Table[ApiKeyRecord]
+    api_keys: PostgresApiKeysTable
     workspace: PostgresWorkspaceTable
 
     @classmethod
-    def bind(cls, session: DbSession, tenant_id: uuid.UUID, api_keys: Table[ApiKeyRecord]) -> PostgresTenantsRepository:
+    def bind(cls, session: DbSession, tenant_id: uuid.UUID) -> PostgresTenantsRepository:
         return cls(
             members=PostgresMembersTable(session, tenant_id),
             sessions=PostgresSessionsTable(session, tenant_id),
-            api_keys=api_keys,
+            api_keys=PostgresApiKeysTable(session, tenant_id),
             workspace=PostgresWorkspaceTable(session, tenant_id),
         )

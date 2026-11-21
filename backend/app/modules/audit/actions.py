@@ -68,9 +68,12 @@ _ACTIONS = (
     _a("settings.deletion_scheduled", "Deletion Scheduled", *_PG, scheduled_for="str"),
     _a("settings.deletion_cancelled", "Deletion Cancelled", *_PG),
     _a("login.session_revoked", "Session Revoked", *_PG, session_id="str", device="str"),
-    # ---- API keys: still in memory until Stage 3A.2
-    _a("api-key.created", "API Key Created", *_MEMORY, name="str", prefix="str", scopes="list[str]"),
-    _a("api-key.revoked", "API Key Revoked", *_MEMORY, name="str", prefix="str"),
+    # ---- API keys (PostgreSQL since Stage 3B.1). Creation stays disabled in production until Stage 3B.2 verifies the
+    # step-up MFA code against an enrolled factor (today the code is only format-checked).
+    _a(
+        "api-key.created", "API Key Created", "postgres", "durable", False, name="str", prefix="str", scopes="list[str]"
+    ),
+    _a("api-key.revoked", "API Key Revoked", *_PG, name="str", prefix="str"),
     # ---- In-memory modules (Automate, Billing, Connect, Notifications)
     _a(
         "workflow.approved",

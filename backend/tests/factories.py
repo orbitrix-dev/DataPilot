@@ -55,7 +55,7 @@ def remove_demo(s: Session, extra_emails: tuple[str, ...] = ()) -> None:
     from sqlalchemy import delete, select, text
 
     from app.modules.audit.models import AuditEventRecord
-    from app.modules.tenants.models import Role, TenantSettings
+    from app.modules.tenants.models import ApiKey, Role, TenantSettings
     from app.seed import _members
 
     tenant_id = s.scalar(select(Tenant.id).where(Tenant.slug == "acme"))
@@ -63,6 +63,7 @@ def remove_demo(s: Session, extra_emails: tuple[str, ...] = ()) -> None:
         s.execute(text("ALTER TABLE audit_events DISABLE TRIGGER audit_events_append_only"))
         s.execute(delete(AuditEventRecord).where(AuditEventRecord.tenant_id == tenant_id))
         s.execute(text("ALTER TABLE audit_events ENABLE TRIGGER audit_events_append_only"))
+        s.execute(delete(ApiKey).where(ApiKey.tenant_id == tenant_id))
         s.execute(delete(TenantMembership).where(TenantMembership.tenant_id == tenant_id))  # cascades to sessions
         s.execute(delete(Role).where(Role.tenant_id == tenant_id))  # cascades to role_permissions
         s.execute(delete(TenantSettings).where(TenantSettings.tenant_id == tenant_id))

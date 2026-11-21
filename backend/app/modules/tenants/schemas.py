@@ -122,7 +122,7 @@ class Session(BaseModel):
 
 
 class ApiKeyRecord(BaseModel):
-    """Stored key. Only a SHA-256 hash of the secret is kept."""
+    """Stored key. Only an HMAC-SHA256 digest (hex) of the secret is kept, under pepper ``pepper_version``."""
 
     id: str
     name: str
@@ -132,7 +132,9 @@ class ApiKeyRecord(BaseModel):
     created_at: datetime
     last_used_at: datetime | None = None
     revoked_at: datetime | None = None
+    expires_at: datetime | None = None
     secret_hash: str
+    pepper_version: str = ""
 
 
 class ApiKeyOut(BaseModel):
@@ -144,13 +146,28 @@ class ApiKeyOut(BaseModel):
     created_at: datetime
     last_used_at: datetime | None
     revoked_at: datetime | None
+    expires_at: datetime | None = None  # NULL = never expires
 
 
 class ApiKeyCreateIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     scopes: list[Scope] = Field(min_length=1)
-    # Step-up verification. The skeleton accepts any 6 digits; wire to the MFA provider.
+    # Optional expiry; omitted/null means the key never expires (as before).
+    expires_at: datetime | None = None
+    # Step-up verification. NOT yet verified against an enrolled factor: real TOTP step-up arrives in Stage 3B.2, and
+    # until then the api-key.created action is not production-enabled (production refuses to create keys).
     mfa_code: str = Field(pattern=r"^\d{6}$")
+
+    @field_validator("expires_at")
+    @classmethod
+    def _future(cls, v: datetime | None) -> datetime | None:
+        if v is None:
+            return None
+        if v.tzinfo is None:
+            raise ValueError("expires_at must include a time zone")
+        if v <= datetime.now(v.tzinfo):
+            raise ValueError("expires_at must be in the future")
+        return v
 
 
 class ApiKeyCreated(BaseModel):

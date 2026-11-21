@@ -98,8 +98,6 @@ def test_every_action_declares_store_durability_production_and_an_allowlist():
 
 def test_memory_backed_actions_are_exactly_the_in_memory_modules_and_never_production_enabled():
     assert {
-        "api-key.created",
-        "api-key.revoked",
         "workflow.approved",
         "workflow.rejected",
         "billing.plan_changed",
@@ -186,22 +184,6 @@ def test_every_real_call_site_produces_secret_free_events(client):
 
 MemoryCase = tuple[str, str, str, dict, dict, Callable[[object], bool]]
 MEMORY_CASES: list[MemoryCase] = [
-    (
-        "api-key.created",
-        "POST",
-        "/api-keys",
-        {"name": "Reader", "scopes": ["trust:read"], "mfa_code": "123456"},
-        {},
-        lambda reg: any(k.name == "Reader" for k in reg.get("acme").tenants.api_keys.list()),
-    ),
-    (
-        "api-key.revoked",
-        "POST",
-        "/api-keys/key-9f2a/revoke",
-        {},
-        {},
-        lambda reg: reg.get("acme").tenants.api_keys.get("key-9f2a").revoked_at is not None,
-    ),
     (
         "workflow.approved",
         "POST",

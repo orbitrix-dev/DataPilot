@@ -9,7 +9,7 @@ from app.cli import main
 from app.core.config import Settings
 from app.modules.audit.models import AuditEventRecord
 from app.modules.identity.models import User, UserSession
-from app.modules.tenants.models import Role, RolePermission, Tenant, TenantMembership, TenantSettings
+from app.modules.tenants.models import ApiKey, Role, RolePermission, Tenant, TenantMembership, TenantSettings
 from app.modules.tenants.permissions import grants_from_matrix
 from app.modules.tenants.persistence import DEFAULT_SETTINGS, PostgresMembershipRepository, PostgresRoleRepository
 from app.seed import _members, _sessions, _workspace
@@ -28,6 +28,7 @@ FIRST_RUN = {
     "memberships": 12,
     "sessions": 4,
     "audit_events": 12,
+    "api_keys": 2,
 }
 
 
@@ -41,6 +42,7 @@ def counts(s) -> dict[str, int]:
         "memberships": TenantMembership,
         "sessions": UserSession,
         "audit_events": AuditEventRecord,
+        "api_keys": ApiKey,
     }
     return {name: s.scalar(select(func.count()).select_from(model)) for name, model in models.items()}
 
