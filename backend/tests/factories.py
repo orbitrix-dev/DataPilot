@@ -47,14 +47,22 @@ def member(s: Session, t: Tenant, u: User, key: str = "analyst", **kw) -> Tenant
 
 
 def remove_demo(s: Session, extra_emails: tuple[str, ...] = ()) -> None:
-    """Deletes the demo tenant and its users (for tests that commit to the shared test database)."""
-    from sqlalchemy import delete, select
+    """Deletes the demo tenant, its users and its audit events (for tests that commit to the shared test database).
 
+    Must run as the OWNER: audit events are append-only, so this temporarily disables the trigger inside the
+    transaction, which only the table owner can do (the runtime user can't, and can't DELETE audit rows at all).
+    """
+    from sqlalchemy import delete, select, text
+
+    from app.modules.audit.models import AuditEventRecord
     from app.modules.tenants.models import Role, TenantSettings
     from app.seed import _members
 
     tenant_id = s.scalar(select(Tenant.id).where(Tenant.slug == "acme"))
     if tenant_id is not None:
+        s.execute(text("ALTER TABLE audit_events DISABLE TRIGGER audit_events_append_only"))
+        s.execute(delete(AuditEventRecord).where(AuditEventRecord.tenant_id == tenant_id))
+        s.execute(text("ALTER TABLE audit_events ENABLE TRIGGER audit_events_append_only"))
         s.execute(delete(TenantMembership).where(TenantMembership.tenant_id == tenant_id))  # cascades to sessions
         s.execute(delete(Role).where(Role.tenant_id == tenant_id))  # cascades to role_permissions
         s.execute(delete(TenantSettings).where(TenantSettings.tenant_id == tenant_id))

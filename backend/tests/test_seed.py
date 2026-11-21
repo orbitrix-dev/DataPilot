@@ -3,16 +3,19 @@ credentials."""
 
 import hashlib
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select, update
 
 from app.cli import main
 from app.core.config import Settings
+from app.modules.audit.models import AuditEventRecord
 from app.modules.identity.models import User, UserSession
 from app.modules.tenants.models import Role, RolePermission, Tenant, TenantMembership, TenantSettings
 from app.modules.tenants.permissions import grants_from_matrix
 from app.modules.tenants.persistence import DEFAULT_SETTINGS, PostgresMembershipRepository, PostgresRoleRepository
 from app.seed import _members, _sessions, _workspace
 from app.seed_postgres import DEMO_TENANT_SLUG, seed_demo
+
+from .factories import remove_demo
 
 DEMO_MATRIX = _workspace().matrix
 EXPECTED_GRANTS = sum(len(p) for p in grants_from_matrix(DEMO_MATRIX).values())
@@ -24,6 +27,7 @@ FIRST_RUN = {
     "role_permissions": EXPECTED_GRANTS,
     "memberships": 12,
     "sessions": 4,
+    "audit_events": 12,
 }
 
 
@@ -36,6 +40,7 @@ def counts(s) -> dict[str, int]:
         "role_permissions": RolePermission,
         "memberships": TenantMembership,
         "sessions": UserSession,
+        "audit_events": AuditEventRecord,
     }
     return {name: s.scalar(select(func.count()).select_from(model)) for name, model in models.items()}
 
@@ -144,17 +149,7 @@ def test_migration_defaults_match_the_code():
     assert dict(migration.DEMO_PUBLIC_IDS) == {m.email: m.id for m in _members()}
 
 
-def _remove_demo(s) -> None:
-    tenant_id = s.scalar(select(Tenant.id).where(Tenant.slug == DEMO_TENANT_SLUG))
-    if tenant_id is not None:
-        s.execute(delete(TenantMembership).where(TenantMembership.tenant_id == tenant_id))  # cascades to sessions
-        s.execute(delete(Role).where(Role.tenant_id == tenant_id))  # cascades to role_permissions
-        s.execute(delete(TenantSettings).where(TenantSettings.tenant_id == tenant_id))
-        s.execute(delete(Tenant).where(Tenant.id == tenant_id))
-    s.execute(delete(User).where(User.email.in_([m.email for m in _members()])))
-
-
-def test_cli_is_idempotent_end_to_end(migrated, capsys):
+def test_cli_is_idempotent_end_to_end(migrated, owner_database, capsys):
     """Runs the real command twice against the test database (committing), then removes what it created."""
     settings = Settings(env="test")
     try:
@@ -165,8 +160,8 @@ def test_cli_is_idempotent_end_to_end(migrated, capsys):
         with migrated.session() as s:
             assert counts(s) == FIRST_RUN
     finally:
-        with migrated.session() as s:
-            _remove_demo(s)
+        with owner_database.session() as s:
+            remove_demo(s)
     with migrated.session() as s:
         assert counts(s) == dict.fromkeys(FIRST_RUN, 0)
 
@@ -177,3 +172,23 @@ def test_cli_refuses_to_seed_production(migrated, capsys):
     assert "Refusing" in capsys.readouterr().err
     with migrated.session() as s:
         assert counts(s)["tenants"] == 0
+
+
+def test_seed_runs_entirely_as_the_runtime_user(db_session):
+    """db_session connects as datapilot_app: the seed needs only the runtime privileges (no catalog writes)."""
+    from sqlalchemy import text
+
+    assert db_session.execute(text("SELECT current_user")).scalar_one() == "datapilot_app"
+    assert seed_demo(db_session).created == FIRST_RUN
+    assert seed_demo(db_session).total_created == 0
+
+
+def test_demo_audit_ids_are_deterministic_valid_uuid7(db_session):
+    from app.seed import _audit
+
+    seed_demo(db_session)
+    stored = dict(db_session.execute(select(AuditEventRecord.id, AuditEventRecord.occurred_at)).all())
+    expected = {e.id: e.occurred_at for e in _audit()}
+    assert stored == expected  # same ids on every run (deterministic)
+    for event_id, occurred_at in stored.items():
+        assert event_id.version == 7 and int(event_id.hex[:12], 16) == int(occurred_at.timestamp() * 1000)

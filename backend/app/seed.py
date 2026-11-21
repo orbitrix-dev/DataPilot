@@ -4,8 +4,8 @@ from datetime import date
 
 from app.core.clock import seed_time as t
 from app.core.infra import InMemoryQueue, InMemorySecretStore
-from app.modules.audit.repository import InMemoryAuditRepository
-from app.modules.audit.schemas import AuditEvent
+from app.db.base import deterministic_uuid7
+from app.modules.audit.repository import AuditEntry, InMemoryAuditRepository
 from app.modules.automate.repository import InMemoryAutomateRepository
 from app.modules.automate.schemas import ApprovalRequest, Run, Workflow
 from app.modules.billing.repository import InMemoryBillingRepository
@@ -434,7 +434,19 @@ def _automate_runs() -> list[Run]:
     ]
 
 
-def _audit() -> list[AuditEvent]:
+# The demo history's (type, label) pairs as registered audit actions.
+DEMO_AUDIT_ACTIONS = {
+    ("login", "Login"): "login.succeeded",
+    ("login", "Login Blocked"): "login.blocked",
+    ("api-key", "API Key Created"): "api-key.created",
+    ("workflow", "Workflow Approved"): "workflow.approved",
+    ("permission", "Role Changed"): "permission.role_changed",
+    ("connection", "Credential Rotated"): "connection.credential_rotated",
+    ("user", "User Invited"): "user.invited",
+}
+
+
+def _audit() -> list[AuditEntry]:
     rows = [
         ("login", "Login", "Marcus Chen", "SAML SSO (Okta) · Safari on macOS", MARCUS_IP, t(20, 12, 24), None),
         (
@@ -521,10 +533,26 @@ def _audit() -> list[AuditEvent]:
             "api-key:key-3c81",
         ),
     ]
-    return [
-        AuditEvent(id=f"seed-{n:03d}", type=ty, event=ev, actor=a, detail=d, ip=ip, at=at, target=tg)
-        for n, (ty, ev, a, d, ip, at, tg) in enumerate(rows, 1)
-    ]
+    member_ids = {m.name: m.id for m in _members()}
+    entries = []
+    for n, (ty, label, actor, detail, ip, at, target) in enumerate(rows, 1):
+        resource_type, _, resource_id = (target or "").partition(":")
+        entries.append(
+            AuditEntry(
+                # Deterministic UUIDv7: the same id on every run, so seeding is idempotent; its time is the event's.
+                id=deterministic_uuid7(at, f"datapilot-demo-audit:{n:03d}"),
+                occurred_at=at,
+                action=DEMO_AUDIT_ACTIONS[(ty, label)],
+                actor_type="user",
+                actor_id=member_ids[actor],
+                actor_label=actor,
+                summary=detail,
+                resource_type=resource_type or None,
+                resource_id=resource_id or None,
+                client=ip,
+            )
+        )
+    return entries
 
 
 def demo_tenant() -> TenantData:

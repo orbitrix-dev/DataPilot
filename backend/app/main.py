@@ -10,6 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.core.config import Settings, get_settings
 from app.core.db import Database
 from app.core.errors import install_error_handlers
+from app.core.readiness import assert_production_ready
 from app.modules.audit.router import router as audit_router
 from app.modules.automate.router import router as automate_router
 from app.modules.billing.router import router as billing_router
@@ -47,6 +48,8 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        if settings.env == "prod":
+            assert_production_ready()  # refuses to start: see app/core/readiness.py
         yield
         if owns_database and db is not None:
             db.dispose()

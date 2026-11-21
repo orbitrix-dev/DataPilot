@@ -1,7 +1,7 @@
 """Loads the demo tenant into PostgreSQL, matching the in-memory demo in ``app/seed.py`` exactly.
 
 Acme Global Corp: tenant settings, 12 users (with their readable ids, e.g. "u-elena"), the five system roles with the
-current permission matrix, memberships (title, last activity), and the four demo sessions.
+current permission matrix, memberships (title, last activity), the four demo sessions and the 12 demo audit events.
 
 Behaviour:
 - **Idempotent; never overwrites edits.** Rows are inserted with ``ON CONFLICT DO NOTHING`` on their natural keys
@@ -14,6 +14,10 @@ Behaviour:
 - **No usable credentials.** Users get no password. Each demo session gets the digest of a fresh random token that
   is discarded immediately: no one ever holds a token that matches, so these sessions can't authenticate.
   Re-running never replaces a digest or recreates a session.
+- **IDs.** Every inserted row gets an explicit UUIDv7. Demo audit events use *deterministic* UUIDv7s (their
+  timestamp + a fixed label), so ``ON CONFLICT (id) DO NOTHING`` makes them idempotent too.
+- **Runs as the runtime user.** It needs only the runtime privileges (INSERT/SELECT, UPDATE where it fills NULLs);
+  it never writes the permission catalog, and ``ON CONFLICT DO NOTHING`` needs no UPDATE on audit events.
 - **Never in production.** ``app.cli seed-demo`` refuses to run when ``DP_ENV=prod``. Requires
   ``alembic upgrade head``.
 
@@ -32,13 +36,15 @@ from sqlalchemy.orm import Session
 
 from app.core import clock
 from app.db.base import uuid7
+from app.modules.audit.models import AuditEventRecord
+from app.modules.audit.repository import split_client
 from app.modules.identity.models import User, UserSession
 from app.modules.identity.persistence import normalize_email, parse_ip
 from app.modules.tenants.models import Role, RolePermission, Tenant, TenantMembership, TenantSettings
 from app.modules.tenants.permissions import grants_from_matrix
 from app.modules.tenants.persistence import DEFAULT_SETTINGS
 from app.modules.tenants.schemas import ROLES
-from app.seed import _members, _sessions, _workspace
+from app.seed import _audit, _members, _sessions, _workspace
 
 DEMO_TENANT_SLUG = "acme"
 # Demo sessions disappear from Admin → Sessions this long after seeding (they're listed only while unexpired).
@@ -57,6 +63,7 @@ class SeedReport:
             "role_permissions": 0,
             "memberships": 0,
             "sessions": 0,
+            "audit_events": 0,
         }
     )
 
@@ -181,4 +188,25 @@ def seed_demo(session: Session) -> SeedReport:
         }
         if _insert_ignore(session, UserSession, values, ["public_id"]):
             report.created["sessions"] += 1
+
+    # ---- demo audit history (deterministic UUIDv7 ids)
+    for entry in _audit():
+        ip, label = split_client(entry.client)
+        values = {
+            "id": entry.id,
+            "tenant_id": tenant_id,
+            "occurred_at": entry.occurred_at,
+            "action": entry.action,
+            "actor_type": entry.actor_type,
+            "actor_id": entry.actor_id,
+            "actor_label": entry.actor_label,
+            "resource_type": entry.resource_type,
+            "resource_id": entry.resource_id,
+            "summary": entry.summary,
+            "ip_address": ip,
+            "client_label": label,
+            "event_metadata": entry.metadata,
+        }
+        if _insert_ignore(session, AuditEventRecord, values, ["id"]):
+            report.created["audit_events"] += 1
     return report

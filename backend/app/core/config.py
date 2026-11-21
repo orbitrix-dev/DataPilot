@@ -5,6 +5,8 @@ from typing import Literal
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.client_address import parse_trusted_proxies
+
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 REPO_DIR = BACKEND_DIR.parent
 
@@ -45,6 +47,20 @@ class Settings(BaseSettings):
     # Server-side cap on any single statement. 0 disables.
     db_statement_timeout_ms: int = Field(default=15_000, ge=0)
     db_echo: bool = False
+
+    # Reverse proxies whose X-Forwarded-For is trusted: comma-separated IPs/CIDRs. Empty (default) trusts none, so the
+    # client address is always the direct peer. See app/core/client_address.py.
+    trusted_proxies: str = ""
+
+    @property
+    def trusted_proxy_networks(self) -> tuple:
+        return parse_trusted_proxies(self.trusted_proxies)
+
+    @field_validator("trusted_proxies")
+    @classmethod
+    def _valid_proxies(cls, v: str) -> str:
+        parse_trusted_proxies(v)  # ValueError (→ ValidationError) on any invalid entry: misconfiguration stops startup
+        return v
 
     @property
     def dev_auth_enabled(self) -> bool:

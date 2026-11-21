@@ -32,5 +32,6 @@ class RequestContext:
     tenant_id: str
     principal: Principal
     data: TenantData
-    ip: str
+    ip: str  # resolved client address (app/core/client_address.py): an IP, or a label such as "testclient"
     tenant_uuid: uuid.UUID | None = None
+    environment: str = "dev"  # DP_ENV; production refuses audit actions that aren't production-enabled

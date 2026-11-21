@@ -14,7 +14,7 @@ from contextlib import contextmanager
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
-from sqlalchemy import event, select, update
+from sqlalchemy import event, func, select, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
@@ -24,6 +24,7 @@ from app.core.db import Database
 from app.core.errors import Conflict
 from app.deps import Ctx
 from app.main import create_app
+from app.modules.audit.models import AuditEventRecord
 from app.modules.billing import service as billing
 from app.modules.identity.models import User, UserSession
 from app.modules.identity.persistence import PostgresSessionRepository, PostgresUserRepository
@@ -164,7 +165,7 @@ def test_a_sequence_of_writes_gives_the_same_results_as_in_memory(client):
         assert client.get(path).json() == dump(value), path
     # The audit trail of the same operations reads the same (ids and timestamps aside).
     trail = [(e["type"], e["event"], e["detail"]) for e in audit_events(client, limit=50)]
-    memory_trail = [(e.type, e.event, e.detail) for e in sorted(mem.audit.list(), key=lambda e: e.at, reverse=True)]
+    memory_trail = [(e.type, e.event, e.detail) for e in mem.audit.search(None, None, 50, 0).items]
     assert [t for t in trail if "new.person" not in t[2]] == [t for t in memory_trail if "new.person" not in t[2]]
 
 
@@ -381,9 +382,14 @@ def test_a_domain_error_rolls_back_writes_and_their_audit_events(registry, pg_db
         assert s.scalar(select(User).where(User.email == "rolled.back@acme.io")) is None
 
 
-def test_no_audit_event_is_recorded_when_the_commit_fails(client, registry, pg_conn):
-    """Regression: the event is published only after COMMIT succeeds."""
-    before = len(registry.get("acme").audit.list())
+def _audit_count(conn) -> int:
+    with db(conn) as s:
+        return s.scalar(select(func.count()).select_from(AuditEventRecord))
+
+
+def test_no_audit_event_is_recorded_when_the_commit_fails(client, pg_conn):
+    """The event is written in the request's transaction: a failed COMMIT leaves neither the change nor the event."""
+    before = _audit_count(pg_conn)
 
     def fail(session):
         raise RuntimeError("simulated commit failure")
@@ -396,22 +402,22 @@ def test_no_audit_event_is_recorded_when_the_commit_fails(client, registry, pg_c
     finally:
         event.remove(Session, "before_commit", fail)
     assert r.status_code == 500
-    assert len(registry.get("acme").audit.list()) == before
+    assert _audit_count(pg_conn) == before
     with db(pg_conn) as s:
         assert s.scalar(select(User).where(User.email == "never.saved@acme.io")) is None
 
 
-def test_audit_events_are_published_after_a_successful_commit(client, registry):
-    before = len(registry.get("acme").audit.list())
+def test_a_committed_change_and_its_audit_event_are_stored_together(client, pg_conn):
+    before = _audit_count(pg_conn)
     assert client.post("/members/invitations", json={"email": "x@acme.io"}).status_code == 201
-    events = registry.get("acme").audit.list()
-    assert len(events) == before + 1 and events[-1].detail == "Invited x@acme.io as Analyst"
+    assert _audit_count(pg_conn) == before + 1
+    assert audit_events(client, limit=1)[0]["detail"] == "Invited x@acme.io as Analyst"
 
 
 # ====================================================================== restart persistence (committed)
 
 
-def test_writes_and_matrix_changes_survive_an_application_restart(migrated):
+def test_writes_and_matrix_changes_survive_an_application_restart(migrated, owner_database):
     url = Settings().database_url.get_secret_value()
     edited = {cap: dict(row) for cap, row in DEMO_MATRIX.items()}
     edited["trust"]["viewer"] = "None"
@@ -442,7 +448,7 @@ def test_writes_and_matrix_changes_survive_an_application_restart(migrated):
                 c.get("/trust/incidents", headers=as_user("u-nora")).status_code == 403
             )  # the persisted matrix applies
     finally:
-        with migrated.session() as s:
+        with owner_database.session() as s:
             remove_demo(s, extra_emails=("restart.test@acme.io",))
     with migrated.session() as s:
         assert s.scalar(select(Tenant).where(Tenant.slug == "acme")) is None

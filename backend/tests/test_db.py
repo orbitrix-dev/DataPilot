@@ -18,13 +18,13 @@ UNREACHABLE = "postgresql+psycopg://nobody:not-a-real-password@127.0.0.1:1/nowhe
 
 
 @pytest.fixture
-def probe(database: Database) -> Iterator[str]:
-    """A throwaway table, since Stage 1 has no schema yet. Dropped after the test."""
+def probe(owner_database: Database) -> Iterator[str]:
+    """A throwaway table, created as the owner (the runtime user has no DDL rights). Dropped after the test."""
     name = f"stage1_probe_{uuid4().hex[:8]}"
-    with database.session() as s:
+    with owner_database.session() as s:
         s.execute(text(f"CREATE TABLE {name} (id int PRIMARY KEY, note text NOT NULL)"))
     yield name
-    with database.session() as s:
+    with owner_database.session() as s:
         s.execute(text(f"DROP TABLE IF EXISTS {name}"))
 
 
@@ -68,38 +68,38 @@ def test_statement_timeout_is_enforced_by_the_server(database):
 # ---------------------------------------------------------------- unit of work
 
 
-def test_session_commits_when_the_block_succeeds(database, probe):
-    with database.session() as s:
+def test_session_commits_when_the_block_succeeds(owner_database, probe):
+    with owner_database.session() as s:
         s.execute(text(f"INSERT INTO {probe} VALUES (1, 'kept')"))
-    assert rows(database, probe) == [(1, "kept")]
+    assert rows(owner_database, probe) == [(1, "kept")]
 
 
-def test_session_rolls_back_when_the_block_raises(database, probe):
-    with pytest.raises(RuntimeError), database.session() as s:
+def test_session_rolls_back_when_the_block_raises(owner_database, probe):
+    with pytest.raises(RuntimeError), owner_database.session() as s:
         s.execute(text(f"INSERT INTO {probe} VALUES (1, 'lost')"))
         raise RuntimeError("boom")
-    assert rows(database, probe) == []
+    assert rows(owner_database, probe) == []
 
 
-def test_failed_statement_rolls_back_the_whole_transaction(database, probe):
-    with pytest.raises(Exception, match="duplicate key"), database.session() as s:
+def test_failed_statement_rolls_back_the_whole_transaction(owner_database, probe):
+    with pytest.raises(Exception, match="duplicate key"), owner_database.session() as s:
         s.execute(text(f"INSERT INTO {probe} VALUES (1, 'first')"))
         s.execute(text(f"INSERT INTO {probe} VALUES (1, 'duplicate')"))
-    assert rows(database, probe) == []
+    assert rows(owner_database, probe) == []
 
 
 # ---------------------------------------------------------------- per-request transactions
 
 
 @pytest.fixture
-def tx_client(database, probe) -> TestClient:
+def tx_client(owner_database, probe) -> TestClient:
     """The real app plus two routes that write through the DbSession dependency."""
-    app = create_app(Settings(env="test"), database=database)
+    app = create_app(Settings(env="test"), database=owner_database)
 
     @app.post("/_probe/ok")
     def ok(db: DbSession) -> dict:
         db.execute(text(f"INSERT INTO {probe} VALUES (1, 'committed')"))
-        return {"rows": rows(database, probe)}  # what another connection sees *before* the response
+        return {"rows": rows(owner_database, probe)}  # what another connection sees *before* the response
 
     @app.post("/_probe/conflict")
     def conflict(db: DbSession) -> dict:
@@ -109,22 +109,22 @@ def tx_client(database, probe) -> TestClient:
     return TestClient(app)
 
 
-def test_request_transaction_commits_on_success(tx_client, database, probe):
+def test_request_transaction_commits_on_success(tx_client, owner_database, probe):
     r = tx_client.post("/_probe/ok")
     assert r.status_code == 200
     assert r.json() == {"rows": []}  # not visible to other connections until the route returns...
-    assert rows(database, probe) == [(1, "committed")]  # ...then committed
+    assert rows(owner_database, probe) == [(1, "committed")]  # ...then committed
 
 
-def test_commit_failure_is_reported_to_the_client_not_hidden_behind_a_200(database):
+def test_commit_failure_is_reported_to_the_client_not_hidden_behind_a_200(owner_database):
     """The commit runs before the response is sent. A deferred constraint only fails at COMMIT: the client must
     get an error, not a success for data that was never saved. (With FastAPI's default request-scoped dependency
     cleanup the 200 would already be on the wire when the commit failed.)"""
     table = f"stage1_deferred_{uuid4().hex[:8]}"
-    with database.session() as s:
+    with owner_database.session() as s:
         s.execute(text(f"CREATE TABLE {table} (id int, UNIQUE (id) DEFERRABLE INITIALLY DEFERRED)"))
     try:
-        app = create_app(Settings(env="test"), database=database)
+        app = create_app(Settings(env="test"), database=owner_database)
 
         @app.post("/_probe/deferred")
         def deferred(db: DbSession) -> dict:
@@ -133,10 +133,10 @@ def test_commit_failure_is_reported_to_the_client_not_hidden_behind_a_200(databa
 
         r = TestClient(app, raise_server_exceptions=False).post("/_probe/deferred")
         assert r.status_code == 500 and "saved" not in r.text
-        with database.engine.connect() as conn:
+        with owner_database.engine.connect() as conn:
             assert conn.execute(text(f"SELECT count(*) FROM {table}")).scalar_one() == 0
     finally:
-        with database.session() as s:
+        with owner_database.session() as s:
             s.execute(text(f"DROP TABLE IF EXISTS {table}"))
 
 
@@ -146,11 +146,11 @@ def test_db_session_dependency_is_function_scoped():
     assert depends.scope == "function", "DbSession must commit before the response is sent"
 
 
-def test_request_transaction_rolls_back_on_domain_error(tx_client, database, probe):
+def test_request_transaction_rolls_back_on_domain_error(tx_client, owner_database, probe):
     r = tx_client.post("/_probe/conflict")
     assert r.status_code == 409
     assert r.json() == {"error": {"code": "conflict", "message": "Something is in the way"}}
-    assert rows(database, probe) == []
+    assert rows(owner_database, probe) == []
 
 
 def test_database_failures_return_503_without_leaking_details():
