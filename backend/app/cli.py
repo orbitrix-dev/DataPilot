@@ -105,15 +105,27 @@ PURGE_BATCH = 10_000
 #   - level forgotten:    consume resets block_level when blocked_until <= now - memory (which also means no block is
 #                         active: consume refuses only while blocked_until > now)
 #   - idle:               untouched for the cutoff (default: the memory period)
+#
+# Concurrency (READ COMMITTED): the batch is chosen with FOR UPDATE SKIP LOCKED, and only rows this statement locked
+# are deleted.
+#   - A row an in-flight consume holds (it upserted, not yet committed) is skipped, not waited for. Waiting would be
+#     unsafe: a plain DELETE … WHERE id IN (subquery) re-checks only "id matches" after the wait, so it would delete
+#     the state that consume just committed (tested).
+#   - A row a consume changed and committed after this statement's snapshot is re-checked by FOR UPDATE against its
+#     latest version, which no longer qualifies once it carries state again.
+#   - Once locked here, a consume's upsert on that row waits for this commit, then inserts a new row (the deleted one
+#     carried no state, so the decision is the same).
 _PURGE = """
-    DELETE FROM auth_throttle_buckets WHERE id IN (
+    WITH doomed AS (
         SELECT id FROM auth_throttle_buckets
          WHERE updated_at < CAST(:now AS timestamptz) - make_interval(hours => CAST(:idle_hours AS integer))
            AND window_start <= CAST(:now AS timestamptz) - make_interval(secs => CAST(:window AS double precision))
            AND (blocked_until IS NULL
                 OR blocked_until <= CAST(:now AS timestamptz) - make_interval(hours => CAST(:memory AS integer)))
          ORDER BY updated_at
-         LIMIT :batch)
+         LIMIT :batch
+           FOR UPDATE SKIP LOCKED)
+    DELETE FROM auth_throttle_buckets b USING doomed WHERE b.id = doomed.id
 """
 
 
