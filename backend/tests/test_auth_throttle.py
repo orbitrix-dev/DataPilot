@@ -521,6 +521,67 @@ def test_the_owner_purge_removes_only_stale_unblocked_rows(make_limiter, owner_d
     assert limiter.subject_hash("login_account", "fresh") in remaining
 
 
+def _age(owner_database, limiter, name: str, *, idle: timedelta, window: timedelta, blocked: timedelta | None):
+    """Back-dates one account row: last touched ``idle`` ago, window started ``window`` ago, block ended or ends at
+    now + ``blocked`` (None: never blocked)."""
+    now = datetime.now(UTC)
+    values = {"created_at": now - idle, "updated_at": now - idle, "window_start": now - window}
+    if blocked is not None:
+        values |= {"blocked_until": now + blocked, "block_level": 3}
+    with owner_database.session() as s:
+        s.execute(
+            update(AuthThrottleBucket)
+            .where(AuthThrottleBucket.subject_hash == limiter.subject_hash("login_account", name))
+            .values(**values)
+        )
+
+
+def _purged(owner_database, limiter, names, argv=(), settings=None) -> set[str]:
+    from app import cli
+
+    assert cli.main(["purge-auth-throttle", *argv], settings=settings) == 0
+    remaining = {r.subject_hash for r in rows(owner_database)}
+    return {n for n in names if limiter.subject_hash("login_account", n) not in remaining}
+
+
+@pytest.mark.parametrize("argv", [(), ("--older-than-hours", "1")])
+def test_the_purge_keeps_a_remembered_block_level_whatever_the_cutoff(make_limiter, owner_database, argv):
+    """Idle for longer than the memory period, but the block ended less than that ago: consume would still escalate
+    from its level, so the row must survive (any --older-than-hours)."""
+    limiter = make_limiter()
+    names = ("level-remembered", "level-forgotten")
+    for name in names:
+        limiter.consume("login_account", name)
+    _age(
+        owner_database,
+        limiter,
+        "level-remembered",
+        idle=timedelta(hours=30),
+        window=timedelta(hours=30),
+        blocked=-timedelta(hours=1),
+    )
+    _age(
+        owner_database,
+        limiter,
+        "level-forgotten",
+        idle=timedelta(hours=30),
+        window=timedelta(hours=30),
+        blocked=-timedelta(hours=25),
+    )
+    assert _purged(owner_database, limiter, names, argv) == {"level-forgotten"}
+
+
+def test_the_purge_keeps_counts_inside_a_window_longer_than_the_memory(make_limiter, owner_database):
+    settings = Settings(throttle_window_seconds=86_400, throttle_block_memory_hours=1)
+    limiter = make_limiter()
+    names = ("counting", "window-over")
+    for name in names:
+        allowed(limiter, "login_account", name, 3)
+    _age(owner_database, limiter, "counting", idle=timedelta(hours=2), window=timedelta(hours=2), blocked=None)
+    _age(owner_database, limiter, "window-over", idle=timedelta(hours=25), window=timedelta(hours=25), blocked=None)
+    assert _purged(owner_database, limiter, names, settings=settings) == {"window-over"}
+
+
 def test_the_runtime_user_cannot_delete_counters(db_session):
     from sqlalchemy.exc import ProgrammingError
 

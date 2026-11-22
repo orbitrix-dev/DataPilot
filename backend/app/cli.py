@@ -100,7 +100,10 @@ PURGE_BATCH = 10_000
 
 
 def purge_auth_throttle(settings: Settings, args: argparse.Namespace) -> int:
-    """Deletes counters untouched for longer than the progressive-block memory (default) and not currently blocking.
+    """Deletes counters that are idle (untouched for ``--older-than-hours``, default DP_THROTTLE_BLOCK_MEMORY_HOURS) and
+    carry no state the limiter would still use, with the same boundaries as ``AuthThrottle.consume``: the counting
+    window has ended, and there is no block, or the last one ended long enough ago that its level is forgotten. So it
+    never removes a count, an active block or a remembered block level, whatever cutoff is passed.
     Runs as the OWNER (DP_MIGRATION_DATABASE_URL): the runtime user has no DELETE on the table, by design. In batches,
     so it never holds long locks. Schedule it (e.g. daily); the table otherwise grows with distinct subjects."""
     from sqlalchemy import text
@@ -123,19 +126,26 @@ def purge_auth_throttle(settings: Settings, args: argparse.Namespace) -> int:
                         DELETE FROM auth_throttle_buckets WHERE id IN (
                             SELECT id FROM auth_throttle_buckets
                              WHERE updated_at < now() - make_interval(hours => :hours)
-                               AND (blocked_until IS NULL OR blocked_until < now())
+                               AND window_start <= now() - make_interval(secs => CAST(:window AS double precision))
+                               AND (blocked_until IS NULL
+                                    OR blocked_until <= now() - make_interval(hours => CAST(:memory AS integer)))
                              ORDER BY updated_at
                              LIMIT :batch)
                         """
                     ),
-                    {"hours": hours, "batch": PURGE_BATCH},
+                    {
+                        "hours": hours,
+                        "window": settings.throttle_window_seconds,
+                        "memory": settings.throttle_block_memory_hours,
+                        "batch": PURGE_BATCH,
+                    },
                 ).rowcount
             deleted += batch
             if batch < PURGE_BATCH:
                 break
     finally:
         database.dispose()
-    print(f"Deleted {deleted} abuse-protection counters untouched for more than {hours} h.")
+    print(f"Deleted {deleted} abuse-protection counters idle for more than {hours} h and carrying no state.")
     return 0
 
 
