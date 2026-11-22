@@ -36,6 +36,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.core import clock
+from app.core.tenant_scope import bind_tenant
 from app.db.base import uuid7
 from app.modules.audit.models import AuditEventRecord
 from app.modules.audit.repository import split_client
@@ -97,6 +98,7 @@ def seed_demo(session: Session) -> SeedReport:
         report.created["tenants"] += 1
     tenant_id = session.scalar(select(Tenant.id).where(Tenant.slug == DEMO_TENANT_SLUG))
     report.tenant_id = tenant_id
+    bind_tenant(session, tenant_id)  # everything below is the demo tenant's (users are global)
 
     demo_settings = {
         "industry": workspace.org.industry,

@@ -27,6 +27,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core import clock
+from app.core.tenant_scope import bind_tenant
 from app.db.base import uuid7
 
 from . import actions
@@ -90,6 +91,8 @@ class SecurityAuditWriter:
         )
         try:
             with self._sessions() as session, session.begin():
+                if tenant_id is not None:  # a tenant's event is written as that tenant; global events bind none
+                    bind_tenant(session, tenant_id)
                 session.add(to_record(entry, tenant_id))
         except Exception as exc:  # noqa: BLE001 - security logging must never break the caller
             with self._lock:

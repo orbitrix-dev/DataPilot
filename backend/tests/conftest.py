@@ -1,6 +1,7 @@
 import os
 import secrets
 from collections.abc import Iterator
+from contextlib import contextmanager
 from urllib.parse import urlsplit
 
 import pytest
@@ -9,8 +10,8 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy import text
-from sqlalchemy.engine import Connection, make_url
+from sqlalchemy import event, text
+from sqlalchemy.engine import Connection, Engine, make_url
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import BACKEND_DIR, Settings
@@ -18,6 +19,8 @@ from app.core.db import Database
 from app.main import create_app
 from app.seed import demo_registry
 from app.seed_postgres import seed_demo
+
+from .tenant_context_guard import GUARD
 
 
 class _TestEnv(BaseSettings):
@@ -145,11 +148,28 @@ class BoundDatabase(Database):
 
     Request transactions become savepoints: the app commits and rolls back exactly as in production, and everything is
     discarded when the test's outer transaction rolls back.
+
+    The tenant context (``app.tenant_id``, app/core/tenant_scope.py) is transaction-local in production, but releasing
+    a savepoint keeps it in the outer transaction. Each unit of work therefore starts and ends with it cleared, as a
+    production transaction would: one request's tenant must never be inherited by the next request of a test.
     """
 
     def __init__(self, base: Database, connection: Connection) -> None:
         self.engine = base.engine  # ping() only
+        self._connection = connection
         self._sessions = sessionmaker(bind=connection, join_transaction_mode="create_savepoint", expire_on_commit=False)
+
+    def _clear_tenant_context(self) -> None:
+        self._connection.execute(text("SELECT set_config('app.tenant_id', '', true)"))
+
+    @contextmanager
+    def session(self) -> Iterator[Session]:
+        self._clear_tenant_context()
+        try:
+            with super().session() as session:
+                yield session
+        finally:
+            self._clear_tenant_context()
 
     def dispose(self) -> None:
         pass  # the connection belongs to the test fixture
@@ -225,6 +245,27 @@ def _shared_throttle(migrated):
 def _clear_throttle_counters(owner_database) -> None:
     with owner_database.session() as s:
         s.execute(text("DELETE FROM auth_throttle_buckets"))
+
+
+# Every engine in the run (the app's, the security writer's, the limiter's) reports to the tenant-context guard.
+event.listen(Engine, "before_cursor_execute", GUARD.before_cursor_execute)
+
+
+@pytest.fixture(autouse=True)
+def _tenant_context_guard(request):
+    """Fails a database test in which application code touched tenant-owned rows with no tenant bound
+    (tests/tenant_context_guard.py). Tests of the guard itself opt out with ``@pytest.mark.no_tenant_guard``."""
+    if "migrated" not in request.fixturenames or request.node.get_closest_marker("no_tenant_guard"):
+        yield
+        return
+    GUARD.reset()
+    GUARD.enabled = True
+    try:
+        yield
+    finally:
+        GUARD.enabled = False
+    if GUARD.violations:
+        pytest.fail(GUARD.report(), pytrace=False)
 
 
 @pytest.fixture(autouse=True)

@@ -1,4 +1,4 @@
-# Database schema (Stages 2A–3B.3)
+# Database schema (Stages 2A–4A.1)
 
 PostgreSQL 16+ (developed on 18), managed only by Alembic (`backend/migrations/`). ORM models live in `backend/app/modules/*/models.py` and must match the migrations; `uv run alembic check` and `tests/test_core_migration.py` enforce it.
 
@@ -208,13 +208,30 @@ The Admin → Permissions page speaks *levels* per capability. `app/modules/tena
    - Every query filters by it, and every write takes `tenant_id` from it.
    - Another tenant's id raises the same `NotFound` as a missing id, without hinting that the row exists elsewhere, so ids can't be probed (no IDOR).
    - Global repositories (`PostgresTenantRepository`, `PostgresUserRepository`, `PostgresPermissionCatalogRepository`) are separate.
-3. **Row-level security: not enabled.** It's evaluated and deferred because:
-   - the API connects as the table owner, and owners bypass RLS unless `FORCE ROW LEVEL SECURITY` is set;
-   - it needs a per-transaction `SET LOCAL app.tenant_id` from the authenticated context, which doesn't exist until authentication;
-   - login (listing a user's tenants) and the seed legitimately cross tenants and need a controlled bypass.
+3. **Tenant context (Stage 4A.1).** Every unit of work binds its tenant to the database transaction before it touches tenant-owned rows: `SELECT set_config('app.tenant_id', '<uuid>', true)`, only through `app/core/tenant_scope.py`. The `true` makes it transaction-local: PostgreSQL discards it at COMMIT or ROLLBACK, so it never leaks to the next request on a pooled connection (tested on one pooled connection serving successive transactions).
+   - **Where it is bound.** Each path binds once it knows the tenant:
+     - API keys: the key's tenant.
+     - Access tokens: the token's tenant claim, then the session is looked up *within* that tenant.
+     - Development headers: the resolved tenant.
+     - Sign-in: the chosen tenant.
+     - Refresh, cookie sign-out and invitation acceptance: the tenant of the row found.
+     - `invite-user`, the demo seed, and `SecurityAuditWriter` for a tenant's event.
+   - **Order and switching.** Pending writes are flushed before the context changes, so a write is always sent under the tenant it was made for. A user-level MFA event, recorded in each of the user's tenants, binds each tenant in turn with `tenant_scope` and then restores the caller's context.
+   - **Lookups that run before the tenant is known.** These find the row that tells us the tenant:
+     - API key by digest;
+     - refresh token by digest;
+     - invitation by digest;
+     - the user's tenants at sign-in and for MFA events;
+     - the production check over every tenant's settings (`readiness.tenant_blockers`).
 
-   The schema is ready for it (`tenant_id` on every tenant-owned table, including `role_permissions`). The plan is a least-privilege application role plus forced RLS policies, once authentication provides the tenant context.
-4. **Errors.** Expected integrity violations (duplicates, missing parents) become domain errors (`409`, `404`). Database messages and constraint names never reach responses (tested).
+     Stage 4A.3 replaces them with narrow `SECURITY DEFINER` functions. The readiness check is the one that matters most: under RLS an unbound read sees *no rows*, so the check would pass for the wrong reason.
+   - **Checked across the whole test suite.** `tests/tenant_context_guard.py` asks PostgreSQL before every statement on a tenant-owned table whether a tenant is bound. It fails any test in which application code (requests, services, CLI, seed) sends one unbound, other than the documented lookups above. Tests that call a repository directly are not checked.
+   - **Nothing reads the context yet.** Behaviour is unchanged until row-level security is switched on (4A.4).
+
+4. **Row-level security: not enabled yet (planned for Stage 4A.4).** The API has connected as the least-privilege `datapilot_app` user since 3A.1. That user owns no tables and has `NOBYPASSRLS`, so policies will apply to it. The remaining prerequisites are the tenant context (above, done in 4A.1), a `tenant_id` on `refresh_tokens` (4A.2), and controlled lookups for the paths that cross tenants (4A.3).
+
+   **What RLS will and won't protect against.** It will stop a query that forgets its tenant filter. It will not stop code running as the runtime user from setting `app.tenant_id` itself, so SQL injection or arbitrary code are out of its scope.
+5. **Errors.** Expected integrity violations (duplicates, missing parents) become domain errors (`409`, `404`). Database messages and constraint names never reach responses (tested).
 
 ## Credentials
 
