@@ -46,6 +46,7 @@ from app.core.security import (
     normalize_recovery_code,
     token_digest,
 )
+from app.core.tenant_scope import tenant_scope
 from app.modules.audit.repository import PostgresAuditRepository
 from app.modules.audit.service import record_event
 from app.modules.identity.models import MfaRecoveryCode, MfaTotpFactor, User
@@ -290,7 +291,8 @@ def _audit_everywhere(
             TenantMembership.user_id == user.id, TenantMembership.membership_status == "active"
         )
     ).all()
-    for tenant_id in tenant_ids or [None]:
+
+    def record(tenant_id: uuid.UUID | None) -> None:
         record_event(
             PostgresAuditRepository(db, tenant_id),
             action,
@@ -303,6 +305,12 @@ def _audit_everywhere(
             metadata=metadata or None,
             environment=settings.env,
         )
+
+    if not tenant_ids:
+        record(None)  # a global event: no tenant to bind
+    for tenant_id in tenant_ids:
+        with tenant_scope(db, tenant_id):  # each event is written as its own tenant; the caller's context comes back
+            record(tenant_id)
 
 
 def confirm_enrollment(

@@ -18,6 +18,11 @@ permission matrix) is PostgreSQL-backed and bound to this request's transaction.
 Notifications stay in the in-memory registry, keyed by tenant slug. The audit log is PostgreSQL-backed and written
 in this request's transaction (``PostgresAuditRepository``): an event commits or rolls back with the change.
 
+Tenant context (Stage 4A): every path above binds the resolved tenant to the transaction
+(``app/core/tenant_scope.py``) before it touches tenant-owned rows: the API-key path once the key's tenant is known,
+the access-token path from the token's tenant claim (``auth.service.authenticate_access_token``), the development
+path once the tenant is resolved.
+
 Client address: ``app/core/client_address.py`` (X-Forwarded-For only from ``DP_TRUSTED_PROXIES``).
 
 Authorization follows the tenant's live permission matrix (Admin → Permissions).
@@ -38,6 +43,7 @@ from app.core.context import Principal, RequestContext
 from app.core.db import DbSession
 from app.core.errors import Forbidden, ServiceUnavailable, Unauthorized
 from app.core.security import Keyring, api_key_digest
+from app.core.tenant_scope import bind_tenant
 from app.modules.audit.repository import PostgresAuditRepository
 from app.modules.auth import security_events
 from app.modules.auth import service as auth_service
@@ -113,6 +119,7 @@ def _authenticate_api_key(
         on_reject(key, tenant)
         raise Unauthorized(INVALID_API_KEY)
     _check_tenant(tenant, tenant.slug)
+    bind_tenant(db, tenant.id)  # before the key is touched, so its update is sent as its own tenant
     if key.pepper_version != keyring.active:  # pepper rotation: re-hash under the active version while we have it
         key.secret_hash = api_key_digest(secret, keyring.active_secret)
         key.pepper_version = keyring.active
@@ -210,6 +217,7 @@ def get_ctx(
 
     slug = x_datapilot_tenant or settings.default_dev_tenant
     tenant = _resolve_tenant(db, slug)  # tenant status is checked before any membership lookup
+    bind_tenant(db, tenant.id)
     data = _request_data(db, registry, slug, tenant)
     member = data.tenants.members.find_active(x_datapilot_user or settings.default_dev_user)
     if member is None:

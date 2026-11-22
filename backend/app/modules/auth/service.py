@@ -47,6 +47,7 @@ from app.core.security import (
     validate_new_password,
     verify_password,
 )
+from app.core.tenant_scope import bind_tenant
 from app.modules.audit.repository import PostgresAuditRepository
 from app.modules.audit.service import record_event
 from app.modules.identity.models import InvitationToken, RefreshToken, User, UserSession
@@ -123,6 +124,7 @@ def issue_invitation(
     tenant = db.scalar(select(Tenant).where(Tenant.slug == tenant_slug))
     if tenant is None or tenant.status != "active":
         raise NotFound(f"No active tenant {tenant_slug!r}")
+    bind_tenant(db, tenant.id)
     role = db.scalar(select(Role).where(Role.tenant_id == tenant.id, Role.key == role_key))
     if role is None:
         raise NotFound(f"Role {role_key!r} not found in {tenant_slug!r}")
@@ -209,6 +211,7 @@ def accept_invitation(db: Session, settings: Settings, *, token: str, password: 
     if found is None:
         raise Unauthorized(INVALID_INVITATION)
     invitation, user, tenant, membership = found
+    bind_tenant(db, tenant.id)
     if tenant.status != "active" or user.status != "active" or membership.membership_status == "suspended":
         raise Unauthorized(INVALID_INVITATION)
     try:
@@ -360,6 +363,7 @@ def login(
     if len(memberships) > 1:
         raise Conflict("Choose a workspace to sign in to", tenants=[t.slug for _, t in memberships])
     membership, tenant = memberships[0]
+    bind_tenant(db, tenant.id)
     if tenant.status == "suspended":
         on_failure("login.blocked", "tenant_suspended", user, tenant.id)
         raise Forbidden("This workspace is suspended")
@@ -502,6 +506,7 @@ def refresh(db: Session, settings: Settings, *, refresh_token: str, client: str)
     if found is None:
         raise Unauthorized(INVALID_SESSION)
     token, session = found
+    bind_tenant(db, session.tenant_id)
     if token.used_at is not None or token.revoked_at is not None:
         _revoke_family(db, session, "refresh_token_reuse", now)
         user = db.get(User, session.user_id)
@@ -543,6 +548,7 @@ def refresh(db: Session, settings: Settings, *, refresh_token: str, client: str)
 
 
 def logout(db: Session, settings: Settings, *, session: UserSession, client: str) -> None:
+    bind_tenant(db, session.tenant_id)  # already bound when the access token named the session; not via the cookie
     now = clock.now()
     already = session.revoked_at is not None
     _revoke_family(db, session, "logout", now)
@@ -590,15 +596,19 @@ def authenticate_access_token(db: Session, settings: Settings, token: str, *, cl
         )
     except InvalidAccessToken:
         raise Unauthorized(INVALID_SESSION) from None
+    # The token names its tenant, so the session is looked up inside it: no cross-tenant lookup is needed.
+    tenant = db.scalar(select(Tenant).where(Tenant.slug == claims.tenant_slug))
+    if tenant is None:
+        raise Unauthorized(INVALID_SESSION)
+    bind_tenant(db, tenant.id)
     row = db.execute(
-        select(UserSession, User, Tenant)
+        select(UserSession, User)
         .join(User, User.id == UserSession.user_id)
-        .join(Tenant, Tenant.id == UserSession.tenant_id)
-        .where(UserSession.public_id == claims.session_public_id)
+        .where(UserSession.tenant_id == tenant.id, UserSession.public_id == claims.session_public_id)
     ).first()
     if row is None:
         raise Unauthorized(INVALID_SESSION)
-    session, user, tenant = row
+    session, user = row
     if user.public_id != claims.user_public_id or tenant.slug != claims.tenant_slug:
         raise Unauthorized(INVALID_SESSION)
     now = clock.now()

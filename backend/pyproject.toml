@@ -40,3 +40,6 @@ extend-immutable-calls = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "no_tenant_guard: the test exercises the tenant-context guard itself (tests/tenant_context_guard.py)",
+]

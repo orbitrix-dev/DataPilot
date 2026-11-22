@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.core import clock
 from app.core.errors import Conflict, NotFound
+from app.core.tenant_scope import tenant_scope
 from app.db.integrity import translate_integrity_errors
 
 from .models import (
@@ -114,8 +115,9 @@ class PostgresTenantRepository:
         tenant = Tenant(slug=slug, name=name.strip())
         with translate_integrity_errors(self._s, unique=lambda: Conflict(f"The slug {slug!r} is already taken")):
             self._s.add(tenant)
-        self._s.add(TenantSettings(tenant_id=tenant.id, **{**DEFAULT_SETTINGS, **(settings or {})}))
-        self._s.flush()
+        with tenant_scope(self._s, tenant.id):  # the settings row is the new tenant's; the caller's context returns
+            self._s.add(TenantSettings(tenant_id=tenant.id, **{**DEFAULT_SETTINGS, **(settings or {})}))
+            self._s.flush()
         self._s.refresh(tenant)  # server defaults (status, timestamps)
         return tenant
 
