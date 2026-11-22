@@ -9,6 +9,7 @@ uv run python -m app.cli purge-auth-throttle  # delete stale abuse-protection co
 
 import argparse
 import sys
+from datetime import datetime
 
 from app.core.config import Settings
 from app.core.db import Database
@@ -98,44 +99,68 @@ def invite_user(settings: Settings, args: argparse.Namespace) -> int:
 
 PURGE_BATCH = 10_000
 
+# A row is deleted only when AuthThrottle.consume could no longer derive any state from it, using consume's own
+# boundaries (app/modules/auth/throttle.py, _CONSUME):
+#   - window over:        consume restarts the count when window_start <= now - window
+#   - level forgotten:    consume resets block_level when blocked_until <= now - memory (which also means no block is
+#                         active: consume refuses only while blocked_until > now)
+#   - idle:               untouched for the cutoff (default: the memory period)
+_PURGE = """
+    DELETE FROM auth_throttle_buckets WHERE id IN (
+        SELECT id FROM auth_throttle_buckets
+         WHERE updated_at < CAST(:now AS timestamptz) - make_interval(hours => CAST(:idle_hours AS integer))
+           AND window_start <= CAST(:now AS timestamptz) - make_interval(secs => CAST(:window AS double precision))
+           AND (blocked_until IS NULL
+                OR blocked_until <= CAST(:now AS timestamptz) - make_interval(hours => CAST(:memory AS integer)))
+         ORDER BY updated_at
+         LIMIT :batch)
+"""
 
-def purge_auth_throttle(settings: Settings, args: argparse.Namespace) -> int:
-    """Deletes counters untouched for longer than the progressive-block memory (default) and not currently blocking.
-    Runs as the OWNER (DP_MIGRATION_DATABASE_URL): the runtime user has no DELETE on the table, by design. In batches,
-    so it never holds long locks. Schedule it (e.g. daily); the table otherwise grows with distinct subjects."""
+
+def purge_throttle_rows(database: Database, settings: Settings, *, idle_hours: int, at: datetime | None = None) -> int:
+    """Deletes, in batches, the rows that carry no limiter state (see ``_PURGE``). Every batch uses the same reference
+    time: ``at`` (tests of the exact boundaries) or the database clock read once at the start."""
     from sqlalchemy import text
 
+    deleted = 0
+    with database.session() as session:
+        now = at or session.execute(text("SELECT statement_timestamp()")).scalar_one()
+    params = {
+        "now": now,
+        "idle_hours": idle_hours,
+        "window": settings.throttle_window_seconds,
+        "memory": settings.throttle_block_memory_hours,
+        "batch": PURGE_BATCH,
+    }
+    while True:
+        with database.session() as session:
+            batch = session.execute(text(_PURGE), params).rowcount
+        deleted += batch
+        if batch < PURGE_BATCH:
+            return deleted
+
+
+def purge_auth_throttle(settings: Settings, args: argparse.Namespace) -> int:
+    """Deletes abuse-protection counters that carry no state the limiter would still use: the counting window has
+    ended, and there was no block or its level is forgotten (DP_THROTTLE_WINDOW_SECONDS and
+    DP_THROTTLE_BLOCK_MEMORY_HOURS, the boundaries ``AuthThrottle.consume`` uses), and the row is idle for
+    ``--older-than-hours`` (default DP_THROTTLE_BLOCK_MEMORY_HOURS). The cutoff can only hold rows back: whatever its
+    value, a count still in its window, an active block or a remembered block level is never deleted.
+    Runs as the OWNER (DP_MIGRATION_DATABASE_URL): the runtime user has no DELETE on the table, by design. In batches,
+    so it never holds long locks. Schedule it (e.g. daily); the table otherwise grows with distinct subjects."""
     if settings.migration_database_url is None:
         print("DP_MIGRATION_DATABASE_URL (the owner) is not set.", file=sys.stderr)
         return 2
-    hours = args.older_than_hours or settings.throttle_block_memory_hours
+    hours = settings.throttle_block_memory_hours if args.older_than_hours is None else args.older_than_hours
     if hours < 1:
         print("--older-than-hours must be at least 1.", file=sys.stderr)
         return 2
     database = Database(settings.migration_database_url.get_secret_value())
-    deleted = 0
     try:
-        while True:
-            with database.session() as session:
-                batch = session.execute(
-                    text(
-                        """
-                        DELETE FROM auth_throttle_buckets WHERE id IN (
-                            SELECT id FROM auth_throttle_buckets
-                             WHERE updated_at < now() - make_interval(hours => :hours)
-                               AND (blocked_until IS NULL OR blocked_until < now())
-                             ORDER BY updated_at
-                             LIMIT :batch)
-                        """
-                    ),
-                    {"hours": hours, "batch": PURGE_BATCH},
-                ).rowcount
-            deleted += batch
-            if batch < PURGE_BATCH:
-                break
+        deleted = purge_throttle_rows(database, settings, idle_hours=hours)
     finally:
         database.dispose()
-    print(f"Deleted {deleted} abuse-protection counters untouched for more than {hours} h.")
+    print(f"Deleted {deleted} abuse-protection counters idle for more than {hours} h and carrying no state.")
     return 0
 
 

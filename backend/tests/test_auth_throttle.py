@@ -521,6 +521,147 @@ def test_the_owner_purge_removes_only_stale_unblocked_rows(make_limiter, owner_d
     assert limiter.subject_hash("login_account", "fresh") in remaining
 
 
+def _age(owner_database, limiter, name: str, *, idle: timedelta, window: timedelta, blocked: timedelta | None):
+    """Back-dates one account row: last touched ``idle`` ago, window started ``window`` ago, block ended or ends at
+    now + ``blocked`` (None: never blocked)."""
+    now = datetime.now(UTC)
+    values = {"created_at": now - idle, "updated_at": now - idle, "window_start": now - window}
+    if blocked is not None:
+        values |= {"blocked_until": now + blocked, "block_level": 3}
+    with owner_database.session() as s:
+        s.execute(
+            update(AuthThrottleBucket)
+            .where(AuthThrottleBucket.subject_hash == limiter.subject_hash("login_account", name))
+            .values(**values)
+        )
+
+
+def _purged(owner_database, limiter, names, argv=(), settings=None) -> set[str]:
+    """Runs the real command (owner connection, database clock) and returns which of ``names`` it deleted."""
+    from app import cli
+
+    assert cli.main(["purge-auth-throttle", *argv], settings=settings) == 0
+    remaining = {r.subject_hash for r in rows(owner_database)}
+    return {n for n in names if limiter.subject_hash("login_account", n) not in remaining}
+
+
+def _exists(owner_database, limiter, scope: str, name: str) -> bool:
+    return any(r.subject_hash == limiter.subject_hash(scope, name) for r in rows(owner_database))
+
+
+CUTOFFS = [(), ("--older-than-hours", "1")]
+
+
+@pytest.mark.parametrize("argv", CUTOFFS)
+def test_purge_case_a_keeps_a_remembered_block_level(make_limiter, owner_database, argv):
+    """Idle for longer than the memory period and the block has ended, but less than the memory period ago: consume
+    would still escalate from its level, so the row must survive, whatever --older-than-hours says."""
+    limiter = make_limiter()
+    limiter.consume("login_account", "level-remembered")
+    _age(
+        owner_database,
+        limiter,
+        "level-remembered",
+        idle=timedelta(hours=30),
+        window=timedelta(hours=30),
+        blocked=-timedelta(hours=1),
+    )
+    assert _purged(owner_database, limiter, ["level-remembered"], argv) == set()
+
+
+def test_purge_case_b_keeps_counts_inside_a_window_longer_than_the_memory(make_limiter, owner_database):
+    settings = Settings(throttle_window_seconds=86_400, throttle_block_memory_hours=1)
+    limiter = make_limiter()
+    allowed(limiter, "login_account", "counting", 3)
+    _age(owner_database, limiter, "counting", idle=timedelta(hours=2), window=timedelta(hours=2), blocked=None)
+    assert _purged(owner_database, limiter, ["counting"], settings=settings) == set()
+
+
+@pytest.mark.parametrize("argv", CUTOFFS)
+def test_purge_case_c_deletes_rows_with_no_state_left(make_limiter, owner_database, argv):
+    """Idle, window over, and either never blocked or blocked long enough ago that the level is forgotten."""
+    limiter = make_limiter()
+    names = ["never-blocked", "level-forgotten"]
+    for name in names:
+        limiter.consume("login_account", name)
+    _age(owner_database, limiter, "never-blocked", idle=timedelta(hours=30), window=timedelta(hours=30), blocked=None)
+    _age(
+        owner_database,
+        limiter,
+        "level-forgotten",
+        idle=timedelta(hours=30),
+        window=timedelta(hours=30),
+        blocked=-timedelta(hours=25),
+    )
+    assert _purged(owner_database, limiter, names, argv) == set(names)
+
+
+@pytest.mark.parametrize("argv", CUTOFFS)
+def test_purge_case_d_keeps_an_active_block(make_limiter, owner_database, argv):
+    limiter = make_limiter()
+    limiter.consume("login_account", "blocked")
+    _age(
+        owner_database,
+        limiter,
+        "blocked",
+        idle=timedelta(hours=30),
+        window=timedelta(hours=30),
+        blocked=timedelta(hours=1),
+    )
+    assert _purged(owner_database, limiter, ["blocked"], argv) == set()
+
+
+EPSILON = timedelta(microseconds=1)  # timestamptz resolution
+LONG_WINDOW = {"throttle_window_seconds": 7200, "throttle_block_memory_hours": 1}  # window > memory: window decides
+
+
+@pytest.mark.parametrize("offset, still_counted", [(-EPSILON, True), (timedelta(0), False)])
+def test_purge_case_e_window_boundary_matches_consume(make_limiter, owner_database, offset, still_counted):
+    """At window_start + window, consume restarts the count (``window_start <= now - window``); one microsecond
+    earlier it still counts. The purge must keep the row exactly as long as consume would still count it."""
+    from app.cli import purge_throttle_rows
+
+    limiter = make_limiter(**LONG_WINDOW)
+    for name in ("purged", "twin"):
+        limiter.consume("login_ip", name, at=T0)  # window_start = updated_at = T0, never blocked
+    at = T0 + timedelta(seconds=LONG_WINDOW["throttle_window_seconds"]) + offset
+    # consume's own view at that instant, on a subject with the same history (consuming touches the twin's row,
+    # so the twin is no longer idle and the purge below leaves it alone)
+    assert limiter.consume("login_ip", "twin", at=at).attempts == (2 if still_counted else 1)
+    purge_throttle_rows(owner_database, Settings(**LONG_WINDOW), idle_hours=1, at=at)
+    assert _exists(owner_database, limiter, "login_ip", "purged") is still_counted
+
+
+@pytest.mark.parametrize("offset, level_remembered", [(-EPSILON, True), (timedelta(0), False)])
+def test_purge_case_e_block_memory_boundary_matches_consume(make_limiter, owner_database, offset, level_remembered):
+    """At blocked_until + memory, consume forgets the block level (``blocked_until <= now - memory``); one microsecond
+    earlier the next block would escalate. The purge must keep the row exactly as long as the level is remembered."""
+    from app.cli import purge_throttle_rows
+
+    memory = {"throttle_block_memory_hours": 1}
+    limiter = make_limiter(**memory)
+    for name in ("purged", "twin"):
+        refused = [d for d in (limiter.consume("login_account", name, at=T0) for _ in range(6)) if not d.allowed]
+        assert [d.retry_after for d in refused] == [60]  # level 1: blocked_until = T0 + 60 s
+    at = T0 + timedelta(seconds=60) + timedelta(hours=1) + offset
+    # consume's view at that instant: the twin's next block is level 2 (120 s) while the level is remembered
+    decisions = [limiter.consume("login_account", "twin", at=at) for _ in range(6)]
+    assert decisions[-1].retry_after == (120 if level_remembered else 60)
+    purge_throttle_rows(owner_database, Settings(**memory), idle_hours=1, at=at)
+    assert _exists(owner_database, limiter, "login_account", "purged") is level_remembered
+
+
+@pytest.mark.parametrize("value", ["0", "-5"])
+def test_purge_rejects_a_cutoff_below_one_hour_instead_of_using_the_default(make_limiter, owner_database, value):
+    from app import cli
+
+    limiter = make_limiter()
+    limiter.consume("login_account", "stale")
+    _age(owner_database, limiter, "stale", idle=timedelta(hours=30), window=timedelta(hours=30), blocked=None)
+    assert cli.main(["purge-auth-throttle", "--older-than-hours", value]) == 2
+    assert _exists(owner_database, limiter, "login_account", "stale")
+
+
 def test_the_runtime_user_cannot_delete_counters(db_session):
     from sqlalchemy.exc import ProgrammingError
 

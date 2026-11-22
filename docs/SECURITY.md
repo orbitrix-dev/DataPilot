@@ -127,7 +127,13 @@ Shared, persistent counters in PostgreSQL (`auth_throttle_buckets`, `app/modules
 
 **Readiness.** Production startup checks the actual limiter: it is configured, it covers every scope, its active key version is in the keyring, and `auth_throttle_buckets` exists with the runtime user's `SELECT/INSERT/UPDATE` (catalog queries at startup). There is no switch to turn protection off.
 
-**Housekeeping.** Rows are reused per subject, so the table grows with distinct subjects, not requests. The runtime user can't delete. Schedule `python -m app.cli purge-auth-throttle` daily. It runs as the owner (`DP_MIGRATION_DATABASE_URL`) and deletes, in batches of 10 000, rows of any key version whose `updated_at` is older than `DP_THROTTLE_BLOCK_MEMORY_HOURS` (default 24; `--older-than-hours` overrides it) and that aren't blocked right now (`blocked_until` is NULL or in the past). A row with an active block is never deleted. The cutoff runs from the row's last touch, not from the end of its last block. So a subject that went quiet during a block can lose its block level up to `DP_THROTTLE_BLOCK_MAX_SECONDS` earlier than the *memory* period promises. A subject that keeps sending attempts keeps its row fresh.
+**Housekeeping.** Rows are reused per subject, so the table grows with distinct subjects, not requests. The runtime user can't delete. Schedule `python -m app.cli purge-auth-throttle` daily. It runs as the owner (`DP_MIGRATION_DATABASE_URL`) and deletes, in batches of 10 000, rows of any key version that meet **all three** conditions, using the configured `DP_THROTTLE_WINDOW_SECONDS` and `DP_THROTTLE_BLOCK_MEMORY_HOURS`:
+
+1. **Idle:** `updated_at < now − DP_THROTTLE_BLOCK_MEMORY_HOURS`.
+2. **Window over:** `window_start <= now − DP_THROTTLE_WINDOW_SECONDS`. From that instant `consume` starts a new count, so the old one no longer matters. Before it, the count is still enforced, so deleting the row would hand the subject a fresh window. That is how `login_ip` and `api_key_ip` limit, and it matters most when the window is configured longer than the memory period.
+3. **Block level forgotten:** `blocked_until IS NULL`, or `blocked_until <= now − DP_THROTTLE_BLOCK_MEMORY_HOURS`. From that instant `consume` resets the level, so the next block starts again at 1 minute. Before it, the next block escalates (2, 4, … up to 60 minutes). Deleting the row earlier would let an attacker who paused for a while come back at the shortest block. This condition also excludes every active block (`blocked_until > now`).
+
+Conditions 2 and 3 use exactly `AuthThrottle.consume`'s comparisons, so deleting a row never changes a decision (tested one microsecond before and exactly at each boundary). `--older-than-hours N` (N ≥ 1; 0 or negative is refused, not replaced by the default) replaces only the idle cutoff in condition 1. It can hold rows back, but it can never delete a count still inside its window, an active block or a remembered block level. The purge doesn't remove every row older than the memory period, only rows with no limiter state left.
 
 ### Rotating the throttle key (`DP_THROTTLE_KEYS`)
 
@@ -139,24 +145,28 @@ Shared, persistent counters in PostgreSQL (`auth_throttle_buckets`, `app/modules
 2. **Verify that every instance knows both.** Use your deployment tooling: every running process (all replicas, all workers) runs with the new keyring, and nothing started before step 1 is still serving. The application doesn't report its keyring.
 3. **Switch.** Deploy `DP_THROTTLE_KEY_VERSION=new` everywhere, keyring unchanged. During this rollout old-active and new-active instances coexist. That is safe because both list the same versions, so they take the same lock. A row may be re-keyed back and forth between versions while both kinds are running.
 4. **Verify that no old-active instance remains.** Use your deployment tooling, and note the time **T** at which the last old-active instance stopped. From then on, nothing writes old-version rows: an instance re-keys every row it touches to `new`. In the [query below](#verifying-the-rotation), the old version's `latest_update` must not be later than T. If it is, an old-active instance is still running.
-5. **Retain.** Keep the old key listed for at least *memory* hours after T. If `DP_THROTTLE_BLOCK_MAX_SECONDS` or `DP_THROTTLE_WINDOW_SECONDS` is configured longer than that, wait for the longest of the three. One hour is not enough: a block level is remembered for *memory* hours after the block ends, so a subject blocked shortly before T still carries its level on an old-version row.
-6. **Purge.** Run `python -m app.cli purge-auth-throttle` as the owner with its default cutoff, *memory*. Don't pass a smaller `--older-than-hours` to speed this up. Purging doesn't depend on the key version, and it never deletes a row that is blocked right now.
+5. **Retain.** Keep the old key listed until every old-version row has lost its state. That is *memory* hours plus `DP_THROTTLE_BLOCK_MAX_SECONDS` after T, or `DP_THROTTLE_WINDOW_SECONDS` after T if that is longer: 25 h with the defaults. One hour is not enough: a block that started just before T runs for up to the maximum block length, and its level is then remembered for *memory* hours.
+6. **Purge.** Run `python -m app.cli purge-auth-throttle` as the owner. Purging doesn't depend on the key version, and it never deletes a row that still carries state, so running it early is harmless: it just leaves those rows in place.
 7. **Verify, then remove.** Run the [query](#verifying-the-rotation). Remove the old version only when it has no rows left. Then deploy `DP_THROTTLE_KEYS=new=…` (with `DP_THROTTLE_KEY_VERSION=new`) to every instance.
 
 **Removing the old key too early.** Every row still under the old version becomes unreachable. Its subject starts afresh: its count, any active block and its progressive block level are lost (the fresh allowance is tested). An attacker who was blocked gets a new allowance at the first block level. The orphaned rows stay until a purge deletes them. If an instance still *signs* with the old version when other instances no longer list it, the two groups keep separate counters for the same subject, so each enforces only part of the limit. Skipping step 1 (switching an instance to a version that other instances don't know) has the same effect during that rollout.
 
 #### Verifying the rotation
 
-Aggregates only: no `subject_hash`, emails, addresses, account ids or keys. Run it as the owner (`DP_MIGRATION_DATABASE_URL`, the user that runs the purge) or as a read-only role granted only `SELECT` on `auth_throttle_buckets`. The runtime user also has `SELECT`, but keep its credentials for the application. Replace `24` in the first line with the production `DP_THROTTLE_BLOCK_MEMORY_HOURS`.
+Aggregates only: no `subject_hash`, emails, addresses, account ids or keys. Run it as the owner (`DP_MIGRATION_DATABASE_URL`, the user that runs the purge) or as a read-only role granted only `SELECT` on `auth_throttle_buckets`. The runtime user also has `SELECT`, but keep its credentials for the application. Replace `24` and `600` in the first two lines with the production `DP_THROTTLE_BLOCK_MEMORY_HOURS` and `DP_THROTTLE_WINDOW_SECONDS`.
 
 ```sql
-WITH cfg AS (SELECT make_interval(hours => 24) AS memory)  -- = DP_THROTTLE_BLOCK_MEMORY_HOURS
+WITH cfg AS (SELECT make_interval(hours => 24) AS memory,   -- = DP_THROTTLE_BLOCK_MEMORY_HOURS
+                    make_interval(secs => 600)  AS count_window)  -- = DP_THROTTLE_WINDOW_SECONDS
 SELECT b.key_version,
        count(*)                                                        AS total_rows,
+       count(*) FILTER (WHERE b.window_start > now() - cfg.count_window)     AS counting,
        count(*) FILTER (WHERE b.blocked_until > now())                 AS blocked_now,
        count(*) FILTER (WHERE b.blocked_until > now() - cfg.memory)    AS level_remembered,
        count(*) FILTER (WHERE b.updated_at < now() - cfg.memory
-                          AND (b.blocked_until IS NULL OR b.blocked_until < now())) AS purgeable,
+                          AND b.window_start <= now() - cfg.count_window
+                          AND (b.blocked_until IS NULL
+                               OR b.blocked_until <= now() - cfg.memory)) AS purgeable,
        max(b.updated_at)                                               AS latest_update,
        max(b.blocked_until)                                            AS latest_block_end
   FROM auth_throttle_buckets b CROSS JOIN cfg
@@ -164,15 +174,15 @@ SELECT b.key_version,
  ORDER BY b.key_version;
 ```
 
-`purgeable` uses exactly the purge command's condition with its default cutoff. Before step 7:
+`purgeable` counts the rows the purge would delete right now: its three conditions with the same comparisons, at the default idle cutoff. `counting`, `blocked_now` and `level_remembered` count rows that still carry state, which the purge always keeps. Before step 7:
 
 - **No row for the old version:** safe to remove it.
 - **`latest_update` later than T:** an old-active instance is still running. Go back to step 4.
-- **`blocked_now` > 0:** those blocks are still active. The purge keeps them, and removing the key would lift them. Wait until `latest_block_end` has passed, then purge again. This happens only when blocks can outlast *memory*, that is, when `DP_THROTTLE_BLOCK_MAX_SECONDS` is longer than *memory* hours.
+- **`counting`, `blocked_now` or `level_remembered` > 0:** those rows still carry state. The purge keeps them, and removing the key would discard it. You are still inside step 5. Wait until `latest_block_end` is at least *memory* hours ago and no old-version row is `counting`, then purge again.
 - **`purgeable` > 0:** the purge hasn't run since those rows became eligible. Run it again.
 - **Rows remain, none of the above:** they were touched less than *memory* hours ago, so you are still inside step 5. Wait.
 
-`level_remembered` is for information only: these are rows whose last block ended less than *memory* hours ago. The new version's figures are live traffic and need no action.
+The new version's figures are live traffic and need no action.
 
 **Deliberately not done.** No global emergency limit: one attacker could use it to lock everyone out, and the per-address and per-account layers already bound the work per source. No Redis. No quotas for valid API keys. Invitation acceptance isn't throttled, because its tokens carry 256 random bits and can't be guessed.
 
@@ -189,7 +199,7 @@ Unchanged contract, now persisted in PostgreSQL (`api_keys`). The secret is show
 | `DP_JWT_SIGNING_KEYS` + `DP_JWT_ACTIVE_KID` | `kid=secret,kid=secret` (secrets ≥ 32 chars) | Add the new key, make it active (new tokens use it, old ones still verify); after 15 minutes remove the old key. Removing a key invalidates its tokens immediately (tested) |
 | `DP_API_KEY_PEPPERS` + `DP_API_KEY_PEPPER_VERSION` | `version=secret,…` | Add a new version and make it active. Each key is re-hashed under it on its next use; once no key uses the old version, remove it. Keys not used in the meantime stop working (tested) |
 | `DP_MFA_ENCRYPTION_KEYS` + `DP_MFA_ENCRYPTION_KEY_VERSION` | `version=secret,…` | Same pattern: a factor is re-encrypted under the active version the next time its code is verified. Removing a version disables the factors still encrypted under it (tested); check `SELECT key_version, count(*) FROM mfa_totp_factors GROUP BY 1` first |
-| `DP_THROTTLE_KEYS` + `DP_THROTTLE_KEY_VERSION` | `version=secret,…` | Add, verify, switch, verify, then keep the old version for at least `DP_THROTTLE_BLOCK_MEMORY_HOURS` (default 24), purge, verify, and only then remove it. See [Rotating the throttle key](#rotating-the-throttle-key-dp_throttle_keys) |
+| `DP_THROTTLE_KEYS` + `DP_THROTTLE_KEY_VERSION` | `version=secret,…` | Add, verify, switch, verify, then keep the old version for `DP_THROTTLE_BLOCK_MEMORY_HOURS` + `DP_THROTTLE_BLOCK_MAX_SECONDS` (25 h by default), purge, verify, and only then remove it. See [Rotating the throttle key](#rotating-the-throttle-key-dp_throttle_keys) |
 
 All four are required with `DP_ENV=prod`, and validation errors never echo the values (`hide_input_in_errors`). Generate secrets with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Tests generate fresh random keys per run.
 
