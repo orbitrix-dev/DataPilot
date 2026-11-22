@@ -219,7 +219,8 @@ def test_key_rotation_keeps_counters(make_limiter, owner_database):
 
 
 def test_removing_a_version_before_rows_moved_starts_those_subjects_afresh(make_limiter):
-    """Documented trade-off: keep the old version listed for at least one window and block period after rotating."""
+    """Documented trade-off: keep the old version listed for at least DP_THROTTLE_BLOCK_MEMORY_HOURS after the
+    switch, then purge and verify before removing it (docs/SECURITY.md)."""
     before = make_limiter(keys=f"t1={'o' * 48}", active="t1")
     allowed(before, "login_account", account_subject("r@acme.io"), 5, at=T0)
     jumped = make_limiter(keys=f"t2={'n' * 48}", active="t2")

@@ -64,7 +64,7 @@ Read from `DP_*` environment variables, then the repo-root `.env` (shared with D
 | `DP_MIGRATION_DATABASE_URL` | none | **The owner**, used only by Alembic. Must be a different user from `DP_DATABASE_URL` (migration `0003` refuses otherwise) |
 | `DP_TEST_DATABASE_URL` / `DP_TEST_MIGRATION_DATABASE_URL` | none | Test suite only: the runtime user and the owner. Database names must end in `_test` |
 | `DP_TRUSTED_PROXIES` | empty | Comma-separated IPs/CIDRs of reverse proxies whose `X-Forwarded-For` is trusted. Empty = never trust forwarded headers. An invalid value stops startup |
-| `DP_DB_POOL_SIZE` / `DP_DB_MAX_OVERFLOW` | `5` / `10` | Per process. Keep (`pool_size` + `max_overflow`) × processes under the server's `max_connections` |
+| `DP_DB_POOL_SIZE` / `DP_DB_MAX_OVERFLOW` | `5` / `10` | Main pool, per process. Each process also opens the limiter (3) and security audit writer (2) pools: 20 connections per process at most with the defaults. Budget: [docs/DATABASE.md](../docs/DATABASE.md#connection-budget) |
 | `DP_DB_POOL_TIMEOUT_SECONDS` | `10` | Wait for a free pooled connection before failing with 503 |
 | `DP_DB_POOL_RECYCLE_SECONDS` | `1800` | Replace connections older than this |
 | `DP_DB_CONNECT_TIMEOUT_SECONDS` | `5` | |
