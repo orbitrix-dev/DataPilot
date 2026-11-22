@@ -93,6 +93,51 @@ def record_rejection(
     return persisted
 
 
+_THROTTLE_SUMMARIES = {
+    "login_ip": "Too many sign-in attempts from one address; further attempts refused for a while",
+    "login_account": "Too many wrong passwords for one account; further attempts refused for a while",
+    "mfa": "Too many invalid authenticator codes; further codes refused for a while",
+    "recovery_code": "Too many invalid recovery codes; further codes refused for a while",
+    "api_key_ip": "Too many invalid API keys from one address; further invalid keys refused for a while",
+}
+
+
+def record_throttle(
+    writer: SecurityAudit,
+    scope: str,
+    retry_after: int,
+    *,
+    client: str,
+    user: User | None = None,
+    tenant_id: uuid.UUID | None = None,
+) -> bool:
+    """One event when a subject becomes blocked (callers guarantee "once"). Carries the scope and how long, never the
+    subject: no email, no key, no HMAC."""
+    persisted = writer.record(
+        "api-key.throttled" if scope == "api_key_ip" else "login.throttled",
+        _THROTTLE_SUMMARIES[scope],
+        tenant_id=tenant_id,
+        actor_type="user" if user is not None else "anonymous",
+        actor_id=user.public_id if user is not None else None,
+        actor_label=user.full_name if user is not None else "Anonymous",
+        client=client,
+        metadata={"scope": scope, "retry_after_seconds": retry_after},
+    )
+    if not persisted:
+        log.warning("Security event NOT persisted: action=throttle scope=%s", scope)
+    return persisted
+
+
+def throttle_for(request: Request):
+    """The app's limiter. Without one, authentication that needs throttling is refused (fail closed)."""
+    from .throttle import ThrottleUnavailable
+
+    limiter = getattr(request.app.state, "rate_limiter", None)
+    if limiter is None:
+        raise ThrottleUnavailable("Authentication is temporarily unavailable")
+    return limiter
+
+
 def login_failure_hook(request: Request, client: str) -> FailureHook:
     writer = writer_for(request)
 

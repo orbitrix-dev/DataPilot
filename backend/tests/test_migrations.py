@@ -35,7 +35,7 @@ def table() -> str:
     return f"mig_probe_{uuid4().hex[:8]}"
 
 
-HEAD = "0006"
+HEAD = "0007"
 
 
 @pytest.fixture

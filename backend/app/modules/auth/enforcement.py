@@ -5,7 +5,8 @@
 - **SSO**: not implemented and not planned for Stage 3B. A tenant's ``enforce_sso`` setting is stored but not
   enforced (password sign-in still works for its members). Production startup is refused while any active tenant has
   ``enforce_sso`` set. The demo tenant has it set, so the demo keeps working in dev/test only.
-- **Abuse protection** (Stage 3B.3): no sign-in throttling or rate limits yet. Production startup is refused.
+- **Abuse protection**: implemented in Stage 3B.3 (``app/modules/auth/throttle.py``). It is not a flag here: the
+  production guard checks the actual limiter instance, its key and its table (``app/core/readiness.py``).
 
 There is intentionally no configuration switch: the only way to lift a block is to implement the control and make the
 function below reflect it (SSO has no function: implementing it means replacing the tenant check altogether).
@@ -14,7 +15,3 @@ function below reflect it (SSO has no function: implementing it means replacing 
 
 def mfa_enforced() -> bool:
     return True
-
-
-def abuse_protection_enforced() -> bool:
-    return False

@@ -5,7 +5,9 @@ maintained list or a configuration switch:
 - audit retention is not enforced (``audit.retention.is_enforced()``);
 - an action in the audit registry is production-enabled while its business state is memory-backed / transitional
   (memory-backed actions must stay disabled in production until their module is PostgreSQL-backed);
-- sign-in abuse protection is not implemented (``auth.enforcement.abuse_protection_enforced()``);
+- sign-in abuse protection is not active (Stage 3B.3): no limiter on the application (``DP_THROTTLE_KEYS`` /
+  ``DP_THROTTLE_KEY_VERSION`` missing), or the limiter reports a problem (its key, its scopes, its table or the
+  runtime user's privileges on it, checked against the database at startup). There is no switch to disable it;
 - and, from the database: an active tenant requires MFA while MFA is not implemented
   (``auth.enforcement.mfa_enforced()``), or has ``enforce_sso`` set (SSO is not implemented). A stored security
   setting the code would silently ignore is a blocker, never a warning.
@@ -35,8 +37,6 @@ def production_blockers(registry: Iterable[actions.AuditAction] | None = None) -
                 f"Audit action {action.code!r} is production-enabled but its business state is "
                 f"{action.business_store}/{action.durability}"
             )
-    if not enforcement.abuse_protection_enforced():
-        blockers.append("Sign-in abuse protection (throttling, rate limits) is not implemented")
     return blockers
 
 
@@ -61,8 +61,14 @@ class ProductionNotReady(RuntimeError):
     pass
 
 
-def assert_production_ready(database: Database | None, security_audit: object | None = None) -> None:
+def assert_production_ready(
+    database: Database | None, security_audit: object | None = None, rate_limiter: object | None = None
+) -> None:
     blockers = production_blockers()
+    if rate_limiter is None:
+        blockers.append(
+            "Sign-in abuse protection is not active: no limiter (set DP_THROTTLE_KEYS and DP_THROTTLE_KEY_VERSION)"
+        )
     if security_audit is None:
         blockers.append("No security audit writer: rejected sign-ins and API keys would not be recorded")
     elif not callable(getattr(security_audit, "health", None)):
@@ -72,5 +78,7 @@ def assert_production_ready(database: Database | None, security_audit: object | 
     else:
         with database.session() as session:
             blockers += tenant_blockers(session)
+            if rate_limiter is not None:
+                blockers += rate_limiter.problems(session)
     if blockers:
         raise ProductionNotReady("Refusing to start with DP_ENV=prod:\n- " + "\n- ".join(blockers))

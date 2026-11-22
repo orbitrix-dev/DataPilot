@@ -1,8 +1,8 @@
-# Authentication and security (Stages 3B.1–3B.2)
+# Authentication and security (Stages 3B.1–3B.3)
 
 How people and programs prove who they are to the DataPilot API, what is stored, and what is **not** implemented yet. Database details are in [DATABASE.md](DATABASE.md); operator commands in [backend/README.md](../backend/README.md#calling-it).
 
-> **Production is still blocked.** Sign-in abuse protection (Stage 3B.3) and SSO are not implemented, and the API refuses to start with `DP_ENV=prod` while that matters. See [Not implemented](#not-implemented-and-how-that-is-enforced).
+> **Production is still blocked.** SSO is not implemented (tenants with `enforce_sso` block startup) and audit retention isn't enforced; the API refuses to start with `DP_ENV=prod` while that holds. Abuse protection is implemented since Stage 3B.3 and is itself checked at startup. See [Not implemented](#not-implemented-and-how-that-is-enforced).
 
 ## Credentials at a glance
 
@@ -97,9 +97,96 @@ A rejected request rolls its transaction back, so its audit event would vanish w
 | `api-key.step_up_failed` | key creation refused | `step_up_invalid`, `step_up_not_enrolled` |
 | `user.recovery_codes_step_up_failed` | recovery-code regeneration refused (403 wrong/reused code, 409 MFA not enabled) | `recovery_code_regeneration_step_up_failed`, `recovery_code_regeneration_not_enrolled` |
 
-Events carry the reason, the account and tenant when known, and the client address. They never carry the password, code, token or key presented, nor the email typed for an account that doesn't exist (it's attacker-controlled and is sometimes a mistyped password). Events for unknown accounts and keys have no tenant (global). Until 3B.3 adds rate limiting, a flood writes one row per attempt; that is one reason production stays blocked. Production also refuses to start without a writer, or with one that exposes no `health()`.
+Events carry the reason, the account and tenant when known, and the client address. They never carry the password, code, token or key presented, nor the email typed for an account that doesn't exist (it's attacker-controlled and is sometimes a mistyped password). Events for unknown accounts and keys have no tenant (global). The rate limits (below) bound how many of these one source can cause: at most the limit per window per address or account, then one `*.throttled` event per block instead of one row per refused attempt. Production also refuses to start without a writer, or with one that exposes no `health()`.
 
 **Write failures are observable.** A write that fails never breaks the request, but it isn't silent either: the writer logs an ERROR (action code and exception class only), the caller logs a WARNING (`Security event NOT persisted: action=… reason=…`), and bounded counters (events written/failed, consecutive failures, last success/failure time) are served by `GET /healthz/security-audit`, which answers **200 only after a successful write with no failure since**: **503 `unknown`** before the first write (a new writer has proven nothing), **503 `degraded`** while the most recent write failed, 503 `not_configured` without a writer. On a quiet system the state stays `unknown` until the first rejected request is recorded. Point monitoring at it. Nothing is queued in memory: an event that failed is lost, and the counters say so. Startup doesn't probe the writer; the endpoint is the runtime signal.
+
+## Abuse protection (Stage 3B.3)
+
+Shared, persistent counters in PostgreSQL (`auth_throttle_buckets`, `app/modules/auth/throttle.py`). Every application instance reads and writes the same rows, and they survive restarts; no process-local counter decides anything.
+
+**How a check works.** Before a password or code is verified, the attempt is counted with one atomic `INSERT … ON CONFLICT (scope, subject_hash) DO UPDATE … RETURNING`, in its own short transaction on the limiter's own pool (3 connections, 1 s wait, 2 s connect and statement timeouts). The upsert takes the row lock, so concurrent attempts, across any number of instances, are serialized by PostgreSQL. No race admits more than the limit (tested with 40 concurrent attempts over 4 limiter instances). A correct password's reset racing with wrong-password attempts is serialized the same way: every admitted attempt sees a distinct count, at most the limit of wrong attempts is admitted, and the correct one is admitted only if it arrived before the limit (tested at the limiter and through real sign-ins). Counting first also caps the Argon2 work an attacker can trigger. Counts commit even though a refused request's own transaction rolls back.
+
+| Scope | Subject | Default | Policy |
+|---|---|---|---|
+| `login_ip` | client address (IPv6 by /64) | 20 per 10 min | every sign-in or enrolment password check, any outcome; then 429 until the window ends |
+| `login_account` | normalized email | 5 | wrong passwords in a row (a correct password resets); then progressive blocks |
+| `mfa` | user | 5 | wrong or replayed authenticator codes, at sign-in, enrolment confirmation, recovery-code regeneration and API-key step-up; a correct code resets |
+| `recovery_code` | user | 5 | wrong recovery codes at sign-in; a correct one resets |
+| `api_key_ip` | client address | 30 per 10 min | **invalid** keys only (unknown, revoked, expired); valid keys are never counted or refused |
+
+**Progressive blocks** last 1 min, then 2, 4, … up to 60 min; the level is forgotten after 24 h without a block. **No account is ever locked permanently.** The worst an attacker can impose on a victim is a rolling block of at most 60 minutes, and only while they keep spending attempts, each also counted against their own address. A legitimate user caught by it waits, or signs in once the block ends. **Unknown and existing accounts are counted identically**, so the responses (401s, then 429 with the same `Retry-After`) reveal nothing. Changing the case of an email or the source address doesn't escape the account counter. Changing the account doesn't escape the address counter.
+
+**Responses.** `429 {"error": {"code": "too_many_requests", "message": "Too many attempts. Try again later."}}` with `Retry-After` in seconds; no counters, identifiers or account hints. A refused attempt never reaches the password or code check, so even the right password gets 429 during a block. Requests that aren't throttled behave exactly as before.
+
+**Identifiers.** `subject_hash = HMAC-SHA256(DP_THROTTLE_KEYS[version], "datapilot/throttle/v1" ‖ scope ‖ identifier)`. The key is separate from the JWT, pepper and MFA keys. Emails are normalized exactly like sign-in does. Raw addresses, emails, keys and codes are never stored or logged, and neither are the HMACs. Each row records the version it was signed under (`key_version`). `DP_THROTTLE_KEYS` and `DP_THROTTLE_KEY_VERSION` are required with `DP_ENV=prod`. Rotation: [below](#rotating-the-throttle-key-dp_throttle_keys).
+
+**Failure policy: fail closed.** If the limiter can't reach its database, sign-in, enrolment and code checks answer **503** and the password or code is never checked. Throttling is never silently skipped. For the next 5 s (`DP_THROTTLE_FAILURE_COOLDOWN_SECONDS`) every check is refused immediately without contacting the database, so an outage doesn't turn the endpoint into a stream of connection attempts. One error is logged per outage, not per request. **Invalid API keys during an outage get 503** (`Authentication is temporarily unavailable`), not an ordinary 401. The attempt couldn't be counted, so it is neither answered as a normal rejection nor recorded per request, which would be an unbounded write path while the limiter is down. **Valid keys keep working:** they never touch the limiter. An app without a limiter refuses sign-in and invalid keys the same way (503), and production refuses to start without one.
+
+**Audit (bounded).** One `login.throttled` or `api-key.throttled` event (metadata: `scope`, `retry_after_seconds`) when a subject *becomes* blocked, never one per refused request. An invalid API key is counted *before* anything is recorded. `api-key.rejected` is written only for attempts that were counted and admitted, so at most 30 per address per window, and never for attempts refused by a block (429) or by an outage (503). Sign-in works the same way: refused attempts write no `login.failed`. If the security audit writer fails, throttling is unaffected.
+
+**Readiness.** Production startup checks the actual limiter: it is configured, it covers every scope, its active key version is in the keyring, and `auth_throttle_buckets` exists with the runtime user's `SELECT/INSERT/UPDATE` (catalog queries at startup). There is no switch to turn protection off.
+
+**Housekeeping.** Rows are reused per subject, so the table grows with distinct subjects, not requests. The runtime user can't delete. Schedule `python -m app.cli purge-auth-throttle` daily. It runs as the owner (`DP_MIGRATION_DATABASE_URL`) and deletes, in batches of 10 000, rows of any key version that meet **all three** conditions, using the configured `DP_THROTTLE_WINDOW_SECONDS` and `DP_THROTTLE_BLOCK_MEMORY_HOURS`:
+
+1. **Idle:** `updated_at < now − DP_THROTTLE_BLOCK_MEMORY_HOURS`.
+2. **Window over:** `window_start <= now − DP_THROTTLE_WINDOW_SECONDS`. From that instant `consume` starts a new count, so the old one no longer matters. Before it, the count is still enforced, so deleting the row would hand the subject a fresh window. That is how `login_ip` and `api_key_ip` limit, and it matters most when the window is configured longer than the memory period.
+3. **Block level forgotten:** `blocked_until IS NULL`, or `blocked_until <= now − DP_THROTTLE_BLOCK_MEMORY_HOURS`. From that instant `consume` resets the level, so the next block starts again at 1 minute. Before it, the next block escalates (2, 4, … up to 60 minutes). Deleting the row earlier would let an attacker who paused for a while come back at the shortest block. This condition also excludes every active block (`blocked_until > now`).
+
+Conditions 2 and 3 use exactly `AuthThrottle.consume`'s comparisons, so deleting a row never changes a decision (tested one microsecond before and exactly at each boundary). `--older-than-hours N` (N ≥ 1; 0 or negative is refused, not replaced by the default) replaces only the idle cutoff in condition 1. It can hold rows back, but it can never delete a count still inside its window, an active block or a remembered block level. The purge doesn't remove every row older than the memory period, only rows with no limiter state left.
+
+**Safe alongside live traffic.** Each batch is chosen with `SELECT … FOR UPDATE SKIP LOCKED`, and only the rows that statement locked are deleted. A row that a sign-in is updating at that moment is skipped and left for the next run. A row that was updated and committed after the purge started is re-checked against its latest version, which no longer qualifies. A sign-in that reaches a row the purge has already locked waits, then counts on a new row. The deleted row carried no state, so the outcome is the same. A purge therefore never deletes state that a concurrent attempt has just written (tested by racing the two on PostgreSQL). An earlier form, `DELETE … WHERE id IN (subquery)`, could do exactly that: after waiting for the row lock it re-checked only the id, not the conditions.
+
+### Rotating the throttle key (`DP_THROTTLE_KEYS`)
+
+**How rows move.** An instance that lists both versions re-keys a subject's row to its own active version the first time it touches that subject (an attempt or a reset), so counters, blocks and block levels carry over (tested). A subject that isn't touched keeps its old-version row, and only an instance that still lists the old key can find it. While more than one version is listed, every operation on a subject first takes a transaction-scoped advisory lock. The lock is derived from the subject's HMAC under the lowest-named version, so every instance that lists the same versions computes the same lock, whichever version it has active. Re-keying and counting are therefore serialized across instances, even while some sign with the old version and others with the new. A counter can't split into two rows (tested with 40 concurrent attempts over instances with different active versions). With a single version no extra lock is taken.
+
+**Procedure.** Below, `old` and `new` are version names, and *memory* is the production value of `DP_THROTTLE_BLOCK_MEMORY_HOURS`. It is 24 h by default, but the configured value is what counts.
+
+1. **Add.** Deploy `DP_THROTTLE_KEYS=new=…,old=…` to every instance, keeping `DP_THROTTLE_KEY_VERSION=old`.
+2. **Verify that every instance knows both.** Use your deployment tooling: every running process (all replicas, all workers) runs with the new keyring, and nothing started before step 1 is still serving. The application doesn't report its keyring.
+3. **Switch.** Deploy `DP_THROTTLE_KEY_VERSION=new` everywhere, keyring unchanged. During this rollout old-active and new-active instances coexist. That is safe because both list the same versions, so they take the same lock. A row may be re-keyed back and forth between versions while both kinds are running.
+4. **Verify that no old-active instance remains.** Use your deployment tooling, and note the time **T** at which the last old-active instance stopped. From then on, nothing writes old-version rows: an instance re-keys every row it touches to `new`. In the [query below](#verifying-the-rotation), the old version's `latest_update` must not be later than T. If it is, an old-active instance is still running.
+5. **Retain.** Keep the old key listed until every old-version row has lost its state, that is, for **max(*memory* + `DP_THROTTLE_BLOCK_MAX_SECONDS`, `DP_THROTTLE_WINDOW_SECONDS`) after T**: 25 h with the defaults (24 h + 1 h, against a 10 min window). Why each term: an old-version row was last written at or before T. Its window started at or before T, so it is over by T + window. Its block ended by T + the maximum block length, and its level is forgotten *memory* hours later. Its idle cutoff (*memory* after T) is always the shortest of these. One hour is not enough.
+6. **Purge.** Run `python -m app.cli purge-auth-throttle` as the owner. Purging doesn't depend on the key version, and it never deletes a row that still carries state, so running it early is harmless: it just leaves those rows in place.
+7. **Verify, then remove.** Run the [query](#verifying-the-rotation). Remove the old version only when it has no rows left. Then deploy `DP_THROTTLE_KEYS=new=…` (with `DP_THROTTLE_KEY_VERSION=new`) to every instance.
+
+**Removing the old key too early.** Every row still under the old version becomes unreachable. Its subject starts afresh: its count, any active block and its progressive block level are lost (the fresh allowance is tested). An attacker who was blocked gets a new allowance at the first block level. The orphaned rows stay until a purge deletes them. If an instance still *signs* with the old version when other instances no longer list it, the two groups keep separate counters for the same subject, so each enforces only part of the limit. Skipping step 1 (switching an instance to a version that other instances don't know) has the same effect during that rollout.
+
+#### Verifying the rotation
+
+Aggregates only: no `subject_hash`, emails, addresses, account ids or keys. Run it as the owner (`DP_MIGRATION_DATABASE_URL`, the user that runs the purge) or as a read-only role granted only `SELECT` on `auth_throttle_buckets`. The runtime user also has `SELECT`, but keep its credentials for the application. Replace `24` and `600` in the first two lines with the production `DP_THROTTLE_BLOCK_MEMORY_HOURS` and `DP_THROTTLE_WINDOW_SECONDS`.
+
+```sql
+WITH cfg AS (SELECT make_interval(hours => 24) AS memory,   -- = DP_THROTTLE_BLOCK_MEMORY_HOURS
+                    make_interval(secs => 600)  AS count_window)  -- = DP_THROTTLE_WINDOW_SECONDS
+SELECT b.key_version,
+       count(*)                                                        AS total_rows,
+       count(*) FILTER (WHERE b.window_start > now() - cfg.count_window)     AS counting,
+       count(*) FILTER (WHERE b.blocked_until > now())                 AS blocked_now,
+       count(*) FILTER (WHERE b.blocked_until > now() - cfg.memory)    AS level_remembered,
+       count(*) FILTER (WHERE b.updated_at < now() - cfg.memory
+                          AND b.window_start <= now() - cfg.count_window
+                          AND (b.blocked_until IS NULL
+                               OR b.blocked_until <= now() - cfg.memory)) AS purgeable,
+       max(b.updated_at)                                               AS latest_update,
+       max(b.blocked_until)                                            AS latest_block_end
+  FROM auth_throttle_buckets b CROSS JOIN cfg
+ GROUP BY b.key_version
+ ORDER BY b.key_version;
+```
+
+`purgeable` counts the rows the purge would delete right now: its three conditions with the same comparisons, at the default idle cutoff. `counting`, `blocked_now` and `level_remembered` count rows that still carry state, which the purge always keeps. Before step 7:
+
+- **No row for the old version:** safe to remove it.
+- **`latest_update` later than T:** an old-active instance is still running. Go back to step 4.
+- **`counting`, `blocked_now` or `level_remembered` > 0:** those rows still carry state. The purge keeps them, and removing the key would discard it. You are still inside step 5. Wait until `latest_block_end` is at least *memory* hours ago and no old-version row is `counting`, then purge again.
+- **`purgeable` > 0:** the purge hasn't run since those rows became eligible. Run it again.
+- **Rows remain, none of the above:** they were touched less than *memory* hours ago, so you are still inside step 5. Wait.
+
+The new version's figures are live traffic and need no action.
+
+**Deliberately not done.** No global emergency limit: one attacker could use it to lock everyone out, and the per-address and per-account layers already bound the work per source. No Redis. No quotas for valid API keys. Invitation acceptance isn't throttled, because its tokens carry 256 random bits and can't be guessed.
 
 ## API keys
 
@@ -114,8 +201,9 @@ Unchanged contract, now persisted in PostgreSQL (`api_keys`). The secret is show
 | `DP_JWT_SIGNING_KEYS` + `DP_JWT_ACTIVE_KID` | `kid=secret,kid=secret` (secrets ≥ 32 chars) | Add the new key, make it active (new tokens use it, old ones still verify); after 15 minutes remove the old key. Removing a key invalidates its tokens immediately (tested) |
 | `DP_API_KEY_PEPPERS` + `DP_API_KEY_PEPPER_VERSION` | `version=secret,…` | Add a new version and make it active. Each key is re-hashed under it on its next use; once no key uses the old version, remove it. Keys not used in the meantime stop working (tested) |
 | `DP_MFA_ENCRYPTION_KEYS` + `DP_MFA_ENCRYPTION_KEY_VERSION` | `version=secret,…` | Same pattern: a factor is re-encrypted under the active version the next time its code is verified. Removing a version disables the factors still encrypted under it (tested); check `SELECT key_version, count(*) FROM mfa_totp_factors GROUP BY 1` first |
+| `DP_THROTTLE_KEYS` + `DP_THROTTLE_KEY_VERSION` | `version=secret,…` | Add, verify, switch, verify. Then keep the old version for max(`DP_THROTTLE_BLOCK_MEMORY_HOURS` + `DP_THROTTLE_BLOCK_MAX_SECONDS`, `DP_THROTTLE_WINDOW_SECONDS`) after the last old-active instance stops (25 h by default), purge, verify, and only then remove it. See [Rotating the throttle key](#rotating-the-throttle-key-dp_throttle_keys) |
 
-Both are required with `DP_ENV=prod`, and validation errors never echo the values (`hide_input_in_errors`). Generate secrets with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Tests generate fresh random keys per run.
+All four are required with `DP_ENV=prod`, and validation errors never echo the values (`hide_input_in_errors`). Generate secrets with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Tests generate fresh random keys per run.
 
 ## Not implemented, and how that is enforced
 
@@ -123,7 +211,7 @@ Each gap is a production blocker in `app/core/readiness.py`, derived from code (
 
 | Gap | Planned | Blocker |
 |---|---|---|
-| Sign-in throttling and rate limits for login and invalid API keys | 3B.3 | always, until implemented |
+| Quotas for *valid* API keys (request rate per key) | later | none: valid keys are not throttled by 3B.3 |
 | SSO | not scheduled | any active tenant with `enforce_sso = true`: the setting is stored but password sign-in still works, so it must not reach production silently |
 | MFA reset / authenticator replacement | later | none: users are locked out of MFA sign-in, not exposed |
 

@@ -83,6 +83,26 @@ class Settings(BaseSettings):
     mfa_encryption_keys: SecretStr | None = None
     mfa_encryption_key_version: str | None = None
     mfa_issuer: str = "DataPilot"  # the name authenticator apps show
+    # ---- Sign-in abuse protection (Stage 3B.3): shared counters in PostgreSQL (auth_throttle_buckets). Subjects (IP,
+    # email, user) are stored only as HMAC-SHA256 under this versioned key, separate from every other secret.
+    throttle_keys: SecretStr | None = None
+    throttle_key_version: str | None = None
+    throttle_window_seconds: int = Field(default=600, ge=60, le=86_400)
+    # Sign-in attempts (any outcome) per client address per window. Caps password-hash work per address.
+    throttle_login_ip_limit: int = Field(default=20, ge=3, le=10_000)
+    # Consecutive wrong passwords per account identifier before progressive blocks (reset by a correct password).
+    throttle_login_account_limit: int = Field(default=5, ge=3, le=100)
+    # Failed authenticator / recovery codes per user before progressive blocks (reset by a correct code).
+    throttle_mfa_limit: int = Field(default=5, ge=3, le=100)
+    throttle_recovery_code_limit: int = Field(default=5, ge=3, le=100)
+    # Invalid (unknown, revoked, expired) API keys per client address per window; valid keys are never counted.
+    throttle_api_key_ip_limit: int = Field(default=30, ge=5, le=100_000)
+    # Progressive blocks: base, doubled on each repeat, capped; forgotten after this long without a block.
+    throttle_block_base_seconds: int = Field(default=60, ge=1, le=3600)
+    throttle_block_max_seconds: int = Field(default=3600, ge=60, le=86_400)
+    throttle_block_memory_hours: int = Field(default=24, ge=1, le=720)
+    # After the limiter's database fails, refuse immediately for this long instead of reconnecting on every request.
+    throttle_failure_cooldown_seconds: float = Field(default=5, ge=0, le=300)
 
     @property
     def dev_auth_enabled(self) -> bool:
@@ -94,18 +114,21 @@ class Settings(BaseSettings):
         "jwt_signing_keys",
         "api_key_peppers",
         "mfa_encryption_keys",
+        "throttle_keys",
         mode="before",
     )
     @classmethod
     def _empty_means_unset(cls, v: object) -> object:
         return None if isinstance(v, str) and not v.strip() else v
 
-    @field_validator("jwt_active_kid", "api_key_pepper_version", "mfa_encryption_key_version", mode="before")
+    @field_validator(
+        "jwt_active_kid", "api_key_pepper_version", "mfa_encryption_key_version", "throttle_key_version", mode="before"
+    )
     @classmethod
     def _empty_version_means_unset(cls, v: object) -> object:
         return None if isinstance(v, str) and not v.strip() else v
 
-    @field_validator("jwt_signing_keys", "api_key_peppers", "mfa_encryption_keys")
+    @field_validator("jwt_signing_keys", "api_key_peppers", "mfa_encryption_keys", "throttle_keys")
     @classmethod
     def _valid_keyring(cls, v: SecretStr | None) -> SecretStr | None:
         parse_keyring(v)  # malformed entries or short secrets stop startup (the error never contains a secret)
@@ -123,12 +146,15 @@ class Settings(BaseSettings):
                 self.mfa_encryption_key_version,
                 "DP_MFA_ENCRYPTION_KEYS/DP_MFA_ENCRYPTION_KEY_VERSION",
             ),
+            (self.throttle_keys, self.throttle_key_version, "DP_THROTTLE_KEYS/DP_THROTTLE_KEY_VERSION"),
         ):
             if keys is not None or active is not None or self.env == "prod":
                 if keys is None or active is None:
                     raise ValueError(f"{name} must both be set" + (" when DP_ENV=prod" if self.env == "prod" else ""))
                 if active not in parse_keyring(keys):
                     raise ValueError(f"{name}: the active version is not in the keyring")
+        if self.throttle_block_max_seconds < self.throttle_block_base_seconds:
+            raise ValueError("DP_THROTTLE_BLOCK_MAX_SECONDS must be at least DP_THROTTLE_BLOCK_BASE_SECONDS")
         return self
 
 

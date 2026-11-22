@@ -15,6 +15,7 @@ from app.modules.audit.router import router as audit_router
 from app.modules.audit.security_writer import SecurityAuditWriter
 from app.modules.auth.router import router as auth_router
 from app.modules.auth.security_events import SecurityAudit
+from app.modules.auth.throttle import AuthThrottle
 from app.modules.automate.router import router as automate_router
 from app.modules.billing.router import router as billing_router
 from app.modules.connect.router import router as connect_router
@@ -47,6 +48,7 @@ def create_app(
     registry: Registry | None = None,
     database: Database | None = None,
     security_audit: SecurityAudit | None = None,
+    rate_limiter: AuthThrottle | None = None,
 ) -> FastAPI:
     """``database`` lets tests inject a shared one; otherwise it's built from settings and owned by the app.
 
@@ -58,16 +60,21 @@ def create_app(
     db = Database.from_settings(settings) if owns_database else database
     owns_writer = security_audit is None and owns_database and settings.database_url is not None
     writer = SecurityAuditWriter(settings.database_url.get_secret_value()) if owns_writer else security_audit
+    # Abuse protection: shared counters in PostgreSQL on the limiter's own small pool (app/modules/auth/throttle.py).
+    owns_limiter = rate_limiter is None and owns_database
+    limiter = AuthThrottle.from_settings(settings, security_audit=writer) if owns_limiter else rate_limiter
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if settings.env == "prod":
-            assert_production_ready(db, writer)  # refuses to start: see app/core/readiness.py
+            assert_production_ready(db, writer, limiter)  # refuses to start: see app/core/readiness.py
         yield
         if owns_database and db is not None:
             db.dispose()
         if owns_writer:
             writer.dispose()
+        if owns_limiter and limiter is not None:
+            limiter.dispose()
 
     app = FastAPI(
         title="DataPilot API",
@@ -78,6 +85,7 @@ def create_app(
     )
     app.state.db = db
     app.state.security_audit = writer
+    app.state.rate_limiter = limiter  # None: password and code checks answer 503 (fail closed)
     # In-memory storage seeded with the demo tenant. Replace with PostgreSQL-backed repositories.
     app.state.registry = registry or demo_registry()
     app.dependency_overrides[get_settings] = lambda: settings

@@ -4,10 +4,12 @@ uv run python -m app.cli seed-demo            # load the demo tenant into Postgr
 uv run python -m app.cli check-db-privileges  # verify the runtime user's effective privileges (exit 1 on problems)
 uv run python -m app.cli invite-user --tenant acme --email someone@acme.io --role analyst
                                               # issue a single-use invitation; prints the token ONCE
+uv run python -m app.cli purge-auth-throttle  # delete stale abuse-protection counters (as the OWNER; schedule daily)
 """
 
 import argparse
 import sys
+from datetime import datetime
 
 from app.core.config import Settings
 from app.core.db import Database
@@ -95,6 +97,85 @@ def invite_user(settings: Settings, args: argparse.Namespace) -> int:
     return 0
 
 
+PURGE_BATCH = 10_000
+
+# A row is deleted only when AuthThrottle.consume could no longer derive any state from it, using consume's own
+# boundaries (app/modules/auth/throttle.py, _CONSUME):
+#   - window over:        consume restarts the count when window_start <= now - window
+#   - level forgotten:    consume resets block_level when blocked_until <= now - memory (which also means no block is
+#                         active: consume refuses only while blocked_until > now)
+#   - idle:               untouched for the cutoff (default: the memory period)
+#
+# Concurrency (READ COMMITTED): the batch is chosen with FOR UPDATE SKIP LOCKED, and only rows this statement locked
+# are deleted.
+#   - A row an in-flight consume holds (it upserted, not yet committed) is skipped, not waited for. Waiting would be
+#     unsafe: a plain DELETE … WHERE id IN (subquery) re-checks only "id matches" after the wait, so it would delete
+#     the state that consume just committed (tested).
+#   - A row a consume changed and committed after this statement's snapshot is re-checked by FOR UPDATE against its
+#     latest version, which no longer qualifies once it carries state again.
+#   - Once locked here, a consume's upsert on that row waits for this commit, then inserts a new row (the deleted one
+#     carried no state, so the decision is the same).
+_PURGE = """
+    WITH doomed AS (
+        SELECT id FROM auth_throttle_buckets
+         WHERE updated_at < CAST(:now AS timestamptz) - make_interval(hours => CAST(:idle_hours AS integer))
+           AND window_start <= CAST(:now AS timestamptz) - make_interval(secs => CAST(:window AS double precision))
+           AND (blocked_until IS NULL
+                OR blocked_until <= CAST(:now AS timestamptz) - make_interval(hours => CAST(:memory AS integer)))
+         ORDER BY updated_at
+         LIMIT :batch
+           FOR UPDATE SKIP LOCKED)
+    DELETE FROM auth_throttle_buckets b USING doomed WHERE b.id = doomed.id
+"""
+
+
+def purge_throttle_rows(database: Database, settings: Settings, *, idle_hours: int, at: datetime | None = None) -> int:
+    """Deletes, in batches, the rows that carry no limiter state (see ``_PURGE``). Every batch uses the same reference
+    time: ``at`` (tests of the exact boundaries) or the database clock read once at the start."""
+    from sqlalchemy import text
+
+    deleted = 0
+    with database.session() as session:
+        now = at or session.execute(text("SELECT statement_timestamp()")).scalar_one()
+    params = {
+        "now": now,
+        "idle_hours": idle_hours,
+        "window": settings.throttle_window_seconds,
+        "memory": settings.throttle_block_memory_hours,
+        "batch": PURGE_BATCH,
+    }
+    while True:
+        with database.session() as session:
+            batch = session.execute(text(_PURGE), params).rowcount
+        deleted += batch
+        if batch < PURGE_BATCH:
+            return deleted
+
+
+def purge_auth_throttle(settings: Settings, args: argparse.Namespace) -> int:
+    """Deletes abuse-protection counters that carry no state the limiter would still use: the counting window has
+    ended, and there was no block or its level is forgotten (DP_THROTTLE_WINDOW_SECONDS and
+    DP_THROTTLE_BLOCK_MEMORY_HOURS, the boundaries ``AuthThrottle.consume`` uses), and the row is idle for
+    ``--older-than-hours`` (default DP_THROTTLE_BLOCK_MEMORY_HOURS). The cutoff can only hold rows back: whatever its
+    value, a count still in its window, an active block or a remembered block level is never deleted.
+    Runs as the OWNER (DP_MIGRATION_DATABASE_URL): the runtime user has no DELETE on the table, by design. In batches,
+    so it never holds long locks. Schedule it (e.g. daily); the table otherwise grows with distinct subjects."""
+    if settings.migration_database_url is None:
+        print("DP_MIGRATION_DATABASE_URL (the owner) is not set.", file=sys.stderr)
+        return 2
+    hours = settings.throttle_block_memory_hours if args.older_than_hours is None else args.older_than_hours
+    if hours < 1:
+        print("--older-than-hours must be at least 1.", file=sys.stderr)
+        return 2
+    database = Database(settings.migration_database_url.get_secret_value())
+    try:
+        deleted = purge_throttle_rows(database, settings, idle_hours=hours)
+    finally:
+        database.dispose()
+    print(f"Deleted {deleted} abuse-protection counters idle for more than {hours} h and carrying no state.")
+    return 0
+
+
 def main(argv: list[str] | None = None, settings: Settings | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.cli", description="DataPilot operational commands")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -107,6 +188,8 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
     invite.add_argument("--name", help="full name for a new user (defaults to one derived from the email)")
     invite.add_argument("--title", help="job title shown in Admin → Users")
     invite.add_argument("--issued-by", help="operator name, recorded in the audit event")
+    purge = commands.add_parser("purge-auth-throttle", help="Delete stale abuse-protection counters (owner)")
+    purge.add_argument("--older-than-hours", type=int, help="default: DP_THROTTLE_BLOCK_MEMORY_HOURS (24)")
     args = parser.parse_args(argv)
     if args.command == "seed-demo":
         return seed_demo(settings or Settings())
@@ -114,6 +197,8 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
         return check_db_privileges(settings or Settings())
     if args.command == "invite-user":
         return invite_user(settings or Settings(), args)
+    if args.command == "purge-auth-throttle":
+        return purge_auth_throttle(settings or Settings(), args)
     return 1  # unreachable: argparse rejects unknown commands
 
 

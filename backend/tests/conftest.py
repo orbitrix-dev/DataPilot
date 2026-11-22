@@ -9,6 +9,7 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy import text
 from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -67,6 +68,8 @@ os.environ["DP_API_KEY_PEPPERS"] = f"p1={secrets.token_urlsafe(48)}"
 os.environ["DP_API_KEY_PEPPER_VERSION"] = "p1"
 os.environ["DP_MFA_ENCRYPTION_KEYS"] = f"m1={secrets.token_urlsafe(48)}"
 os.environ["DP_MFA_ENCRYPTION_KEY_VERSION"] = "m1"
+os.environ["DP_THROTTLE_KEYS"] = f"t1={secrets.token_urlsafe(48)}"
+os.environ["DP_THROTTLE_KEY_VERSION"] = "t1"
 
 
 def alembic_config() -> Config:
@@ -209,11 +212,67 @@ def security_audit() -> RecordingSecurityAudit:
     return RecordingSecurityAudit()
 
 
+@pytest.fixture(scope="session")
+def _shared_throttle(migrated):
+    """One real limiter for the run (its own small pool on the test database, as the runtime user)."""
+    from app.modules.auth.throttle import AuthThrottle
+
+    limiter = AuthThrottle.from_settings(Settings(env="test"))
+    yield limiter
+    limiter.dispose()
+
+
+def _clear_throttle_counters(owner_database) -> None:
+    with owner_database.session() as s:
+        s.execute(text("DELETE FROM auth_throttle_buckets"))
+
+
+@pytest.fixture(autouse=True)
+def _fresh_throttle_counters(request):
+    """Abuse-protection counters are committed (they must survive a request's rollback), so they would carry over from
+    test to test. Every test that touches the database starts and ends with an empty table."""
+    if "migrated" not in request.fixturenames:
+        yield
+        return
+    owner = request.getfixturevalue("owner_database")
+    _clear_throttle_counters(owner)
+    yield
+    _clear_throttle_counters(owner)
+
+
 @pytest.fixture
-def client(registry, pg_db, security_audit) -> TestClient:
+def throttle(_shared_throttle, security_audit):
+    """The shared limiter, reporting throttling events to this test's security-event recorder."""
+    _shared_throttle.security_audit = security_audit
+    _shared_throttle._down_until = 0.0
+    return _shared_throttle
+
+
+_CURRENT: dict = {"throttle": None}
+
+
+@pytest.fixture(autouse=True)
+def _current_throttle(request):
+    """Makes the shared limiter available to ``make_app`` in tests that use the database."""
+    _CURRENT["throttle"] = request.getfixturevalue("throttle") if "pg_db" in request.fixturenames else None
+    yield
+    _CURRENT["throttle"] = None
+
+
+def make_app(settings=None, registry=None, *, database=None, **kwargs):
+    """``create_app`` for tests that inject the test database: wires in the shared limiter (unless one is given), as
+    production wires in its own. Without a limiter, password and code checks fail closed (503)."""
+    kwargs.setdefault("rate_limiter", _CURRENT["throttle"])
+    return create_app(settings, registry, database=database, **kwargs)
+
+
+@pytest.fixture
+def client(registry, pg_db, security_audit, throttle) -> TestClient:
     """A fresh app per test: Tenants and audit in PostgreSQL (demo seeded), other modules in memory. Requests act as
     Elena Vance (Administrator) unless `as_user` is passed."""
-    app = create_app(Settings(env="test"), registry, database=pg_db, security_audit=security_audit)
+    app = create_app(
+        Settings(env="test"), registry, database=pg_db, security_audit=security_audit, rate_limiter=throttle
+    )
     return TestClient(app, base_url="http://testserver/api/v1")
 
 
@@ -241,7 +300,8 @@ def mfa_code(client: TestClient, user_id: str = "u-elena") -> str:
         factor = mfa.factor_for(s, user)
         if factor is None:
             secret = mfa.start_enrollment(s, settings, user).secret
-            mfa.confirm_enrollment(s, settings, user, pyotp.TOTP(secret).now())
+            throttle = client.app.state.rate_limiter
+            mfa.confirm_enrollment(s, settings, user, pyotp.TOTP(secret).now(), throttle=throttle)
             factor = mfa.factor_for(s, user)
         factor.last_used_step = None
         secret = mfa._secret(mfa.mfa_keyring(settings), factor, user)

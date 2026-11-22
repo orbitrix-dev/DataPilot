@@ -37,6 +37,7 @@ APPROVED = {
     "invitation_tokens": {"SELECT", "INSERT", "UPDATE"},
     "mfa_totp_factors": {"SELECT", "INSERT", "UPDATE"},
     "mfa_recovery_codes": {"SELECT", "INSERT", "UPDATE"},
+    "auth_throttle_buckets": {"SELECT", "INSERT", "UPDATE"},
 }
 
 

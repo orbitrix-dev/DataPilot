@@ -108,7 +108,15 @@ def create_key(
     """Step-up: ``mfa_code`` must be a fresh code from the acting user's confirmed authenticator. Failed attempts are
     recorded by SecurityAuditWriter (the request rolls back)."""
     try:
-        mfa.require_step_up(db, settings, ctx.principal.id, body.mfa_code)
+        mfa.require_step_up(
+            db,
+            settings,
+            ctx.principal.id,
+            body.mfa_code,
+            throttle=security_events.throttle_for(request),
+            client=ctx.ip,
+            tenant_id=ctx.tenant_uuid,
+        )
     except (mfa.StepUpFailed, mfa.MfaEnrollmentRequired) as exc:
         security_events.record_rejection(
             security_events.writer_for(request),

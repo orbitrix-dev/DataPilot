@@ -41,6 +41,7 @@ from app.core.security import Keyring, api_key_digest
 from app.modules.audit.repository import PostgresAuditRepository
 from app.modules.auth import security_events
 from app.modules.auth import service as auth_service
+from app.modules.auth.throttle import ThrottleUnavailable, address_subject
 from app.modules.tenants import service as tenants
 from app.modules.tenants.models import ApiKey, Tenant
 from app.modules.tenants.pg_tables import PostgresTenantsRepository
@@ -143,6 +144,18 @@ def get_ctx(
         writer = security_events.writer_for(request)
 
         def on_reject(key: ApiKey | None, tenant: Tenant | None) -> None:
+            """Invalid-key policy (Stage 3B.3). Valid keys never get here. In order:
+            1. The attempt is counted against the address. Over the limit: 429 (TooManyRequests propagates). The
+               limiter records ONE api-key.throttled event when the address becomes blocked; blocked attempts write
+               no api-key.rejected event.
+            2. Limiter unavailable or not configured (outage policy): 503 ServiceUnavailable. The attempt can't be
+               counted, so it is neither answered as an ordinary 401 nor recorded per request (that would be an
+               unbounded write path); the limiter logs the outage once per episode.
+            3. Counted and within the limit: api-key.rejected is recorded, then 401."""
+            limiter = getattr(request.app.state, "rate_limiter", None)
+            if limiter is None:
+                raise ThrottleUnavailable("Authentication is temporarily unavailable")
+            limiter.enforce("api_key_ip", address_subject(ip), client=ip)  # 429 / 503 propagate
             security_events.record_rejection(
                 writer,
                 "api-key.rejected",
