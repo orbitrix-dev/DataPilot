@@ -651,95 +651,147 @@ def test_purge_case_e_block_memory_boundary_matches_consume(make_limiter, owner_
     assert _exists(owner_database, limiter, "login_account", "purged") is level_remembered
 
 
-def _someone_waits_for_a_lock(owner_database) -> bool:
+class _StatementHook:
+    """Fires on one engine, for one statement, in threads started through ``run`` only (marked thread-locally inside
+    the thread itself, so there is no race on knowing which thread is which). Records that the statement ran, its
+    rowcount and its backend pid; with ``pause``, holds that thread inside its open transaction (row locks taken,
+    nothing committed) until ``release`` is set."""
+
+    def __init__(self, engine, statement_start: str, *, when: str = "after_cursor_execute", pause: bool = False):
+        from sqlalchemy import event
+
+        self._event, self._engine, self._when = event, engine, when
+        self._start, self._pause, self._marked = statement_start, pause, threading.local()
+        self.reached, self.release = threading.Event(), threading.Event()
+        self.rowcount: int | None = None
+        self.backend_pid: int | None = None
+        self.threads: list[threading.Thread] = []
+        event.listen(engine, when, self._fire)
+
+    def _fire(self, conn, cursor, statement, parameters, context, executemany):
+        if not getattr(self._marked, "on", False) or not statement.lstrip().startswith(self._start):
+            return
+        self.rowcount = cursor.rowcount
+        self.backend_pid = conn.connection.dbapi_connection.info.backend_pid
+        self.reached.set()
+        if self._pause:
+            self.release.wait(10)
+
+    def run(self, results: dict, key: str, fn) -> threading.Thread:
+        def target():
+            self._marked.on = True
+            try:
+                results[key] = fn()
+            except BaseException as exc:  # noqa: BLE001 - surfaced by the test's assertions
+                results[key] = exc
+
+        thread = threading.Thread(target=target, daemon=True)
+        self.threads.append(thread)
+        thread.start()
+        return thread
+
+    def close(self) -> None:
+        """Always called (finally): unblocks a paused thread, waits for every thread, removes the hook."""
+        self.release.set()
+        for thread in self.threads:
+            thread.join(10)
+        self._event.remove(self._engine, self._when, self._fire)
+
+
+def _blocked_by(owner_database, pid: int) -> list[int]:
     with owner_database.session() as s:
-        return s.execute(text("SELECT count(*) FROM pg_locks WHERE NOT granted")).scalar_one() > 0
+        return list(s.execute(text("SELECT pg_blocking_pids(:pid)"), {"pid": pid}).scalar_one())
 
 
-def _pause_after(engine, statement_start: str, thread_of):
-    """Holds the given thread inside its transaction right after it executed ``statement_start…`` (so its row locks
-    are taken but not committed) until ``release`` is set. Returns (reached, release, remove)."""
-    from sqlalchemy import event
-
-    reached, release = threading.Event(), threading.Event()
-
-    def pause(conn, cursor, statement, parameters, context, executemany):
-        if threading.current_thread() is thread_of() and statement.lstrip().startswith(statement_start):
-            reached.set()
-            release.wait(10)
-
-    event.listen(engine, "after_cursor_execute", pause)
-    return reached, release, lambda: event.remove(engine, "after_cursor_execute", pause)
-
-
-def _run_in_thread(results: dict, key: str, fn) -> threading.Thread:
-    thread = threading.Thread(target=lambda: results.__setitem__(key, fn()))
-    thread.start()
-    return thread
+def _row(owner_database, limiter, name: str) -> AuthThrottleBucket | None:
+    hashed = limiter.subject_hash("login_account", name)
+    return next((r for r in rows(owner_database) if r.subject_hash == hashed), None)
 
 
 def test_a_purge_racing_a_consume_never_deletes_the_state_the_consume_committed(make_limiter, owner_database):
-    """The consume upserts a stale (eligible) row and holds its row lock; meanwhile the purge starts, so its snapshot
-    still shows the row as eligible. Whatever the purge does next (wait for the lock, or skip the row), the counter
-    the consume commits must survive."""
+    """Deterministic order: (1) the consume upserts a stale, eligible row and stops before committing, holding its
+    row lock; (2) the whole purge, including its `WITH doomed` statement, runs and finishes in that interval: it
+    must neither wait for the lock nor delete the row; (3) the consume commits. Its counter must survive."""
+    from sqlalchemy.exc import OperationalError
+
     from app.cli import purge_throttle_rows
 
     limiter = make_limiter()
     limiter.consume("login_account", "racing")
     _age(owner_database, limiter, "racing", idle=timedelta(hours=30), window=timedelta(hours=30), blocked=None)
-    results, threads = {}, {}
-    reached, release, remove = _pause_after(limiter._engine, "INSERT INTO auth_throttle_buckets", lambda: threads["c"])
+    stale = _row(owner_database, limiter, "racing")
+    results: dict = {}
+    consume = _StatementHook(limiter._engine, "INSERT INTO auth_throttle_buckets", pause=True)
+    purge = _StatementHook(owner_database.engine, "WITH doomed")
     try:
-        threads["c"] = _run_in_thread(results, "decision", lambda: limiter.consume("login_account", "racing"))
-        assert reached.wait(10), "the consume never reached its upsert"
-        purger = _run_in_thread(
-            results, "deleted", lambda: purge_throttle_rows(owner_database, Settings(), idle_hours=24)
-        )
-        deadline = time.monotonic() + 10
-        while purger.is_alive() and not _someone_waits_for_a_lock(owner_database) and time.monotonic() < deadline:
-            time.sleep(0.01)
-        release.set()
-        threads["c"].join(10)
+        consumer = consume.run(results, "decision", lambda: limiter.consume("login_account", "racing"))
+        assert consume.reached.wait(10), "the consume never reached its upsert"
+
+        # (1) the consume has upserted and holds the row lock, but hasn't committed: others still see the stale row
+        with pytest.raises(OperationalError, match="could not obtain lock"), owner_database.session() as s:
+            s.execute(text("SELECT 1 FROM auth_throttle_buckets WHERE id = :id FOR UPDATE NOWAIT"), {"id": stale.id})
+        visible = _row(owner_database, limiter, "racing")
+        assert visible.updated_at == stale.updated_at and visible.window_start == stale.window_start
+
+        # (2) the purge runs to completion while the consume is still paused: it skipped the locked row
+        purger = purge.run(results, "deleted", lambda: purge_throttle_rows(owner_database, Settings(), idle_hours=24))
         purger.join(10)
+        assert not purger.is_alive(), "the purge waited for the consume's row lock"
+        assert purge.reached.is_set(), "the purge's WITH doomed statement never ran"
+        assert purge.rowcount == 0 and results["deleted"] == 0
+        assert consumer.is_alive() and not consume.release.is_set()  # the lock was held throughout
+
+        # (3) the consume commits
+        consume.release.set()
+        consumer.join(10)
+        assert not consumer.is_alive()
     finally:
-        release.set()
-        remove()
+        consume.close()
+        purge.close()
+    assert not isinstance(results["decision"], BaseException), results["decision"]
     assert results["decision"].allowed and results["decision"].attempts == 1  # window restarted: a fresh count of 1
-    [row] = [r for r in rows(owner_database) if r.subject_hash == limiter.subject_hash("login_account", "racing")]
-    assert row.attempt_count == 1 and row.updated_at > datetime.now(UTC) - timedelta(minutes=1)
-    assert results["deleted"] == 0
+    row = _row(owner_database, limiter, "racing")
+    assert row is not None and row.id == stale.id, "the consume's committed counter was deleted"
+    assert row.attempt_count == 1 and row.updated_at > stale.updated_at + timedelta(hours=29)
+    assert row.window_start > stale.window_start + timedelta(hours=29)
 
 
 def test_a_consume_after_a_purge_deleted_its_row_counts_afresh(make_limiter, owner_database):
-    """The other order: the purge has deleted the row but not committed; the consume waits for it, then counts on a
-    new row. Nothing was lost: the deleted row carried no state."""
+    """The other order: the purge has deleted the row and stops before committing; the consume's upsert waits for
+    exactly that purge (pg_blocking_pids), then counts on a new row. Nothing was lost: the deleted row carried no
+    state."""
     from app.cli import purge_throttle_rows
 
     limiter = make_limiter()
     limiter.consume("login_account", "after-purge")
     _age(owner_database, limiter, "after-purge", idle=timedelta(hours=30), window=timedelta(hours=30), blocked=None)
-    results, threads = {}, {}
-    reached, release, remove = _pause_after(owner_database.engine, "WITH doomed", lambda: threads["p"])
+    stale = _row(owner_database, limiter, "after-purge")
+    results: dict = {}
+    purge = _StatementHook(owner_database.engine, "WITH doomed", pause=True)
+    consume = _StatementHook(limiter._engine, "INSERT INTO auth_throttle_buckets", when="before_cursor_execute")
     try:
-        threads["p"] = _run_in_thread(
-            results, "deleted", lambda: purge_throttle_rows(owner_database, Settings(), idle_hours=24)
-        )
-        assert reached.wait(10), "the purge never reached its delete"
-        consumer = _run_in_thread(results, "decision", lambda: limiter.consume("login_account", "after-purge"))
-        deadline = time.monotonic() + 10
-        while not _someone_waits_for_a_lock(owner_database) and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert consumer.is_alive(), "the consume should wait for the purge's uncommitted delete"
-        release.set()
-        threads["p"].join(10)
+        purge.run(results, "deleted", lambda: purge_throttle_rows(owner_database, Settings(), idle_hours=24))
+        assert purge.reached.wait(10), "the purge never reached its delete"
+        assert purge.rowcount == 1  # deleted, not committed
+
+        consumer = consume.run(results, "decision", lambda: limiter.consume("login_account", "after-purge"))
+        assert consume.reached.wait(10), "the consume never reached its upsert"
+        deadline = time.monotonic() + 10  # condition wait on one specific backend, not a timing guess
+        while purge.backend_pid not in _blocked_by(owner_database, consume.backend_pid):
+            assert consumer.is_alive() and time.monotonic() < deadline, "the consume didn't wait for the purge"
+            time.sleep(0.005)
+
+        purge.release.set()
         consumer.join(10)
+        assert not consumer.is_alive()
     finally:
-        release.set()
-        remove()
+        purge.close()
+        consume.close()
     assert results["deleted"] == 1
+    assert not isinstance(results["decision"], BaseException), results["decision"]
     assert results["decision"].allowed and results["decision"].attempts == 1
-    [row] = [r for r in rows(owner_database) if r.subject_hash == limiter.subject_hash("login_account", "after-purge")]
-    assert row.attempt_count == 1
+    row = _row(owner_database, limiter, "after-purge")
+    assert row is not None and row.id != stale.id and row.attempt_count == 1
 
 
 @pytest.mark.parametrize("value", ["0", "-5"])
